@@ -514,7 +514,16 @@ function applyRemote(nd){
 
 /* ---------- helpers ---------- */
 const fmt = n => "$" + Math.round(n||0).toLocaleString("es-CO");
-const parseNum = s => Number(String(s).replace(/[^\d.-]/g,""))||0;
+const parseNum = s => { const digits=String(s).replace(/[^\d]/g,""); return digits?parseInt(digits,10):0; };
+/* aplica separador de miles en vivo a un campo de texto numérico */
+function attachThousands(el){
+  if(!el || el.dataset.thousands) return;
+  el.dataset.thousands="1";
+  el.addEventListener('input',()=>{ const n=parseNum(el.value); el.value = n ? n.toLocaleString("es-CO") : ""; });
+}
+function attachAllMoneyFields(){
+  ['expAmt','cDebt','cLimit','sBal','sGoal'].forEach(id=>attachThousands(document.getElementById(id)));
+}
 const uid = () => Math.random().toString(36).slice(2,9);
 let curMonth = new Date();
 function monthKey(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
@@ -556,8 +565,8 @@ function bindCfg(){
   ia.value=db.people.a.income?db.people.a.income.toLocaleString("es-CO"):"";
   ib.value=db.people.b.income?db.people.b.income.toLocaleString("es-CO"):"";
   const upd=()=>{
-    db.people.a.name=na.value.trim()||"Tú";
-    db.people.b.name=nb.value.trim()||"Novia";
+    db.people.a.name=na.value.trim()||"Nico";
+    db.people.b.name=nb.value.trim()||"Mari";
     db.people.a.income=parseNum(ia.value);
     db.people.b.income=parseNum(ib.value);
     const p=pct();
@@ -566,8 +575,11 @@ function bindCfg(){
     document.getElementById('incTotal').textContent=fmt(db.people.a.income+db.people.b.income);
     save(); syncLabels();
   };
-  [na,nb,ia,ib].forEach(el=>el.oninput=upd);
-  ia.onblur=ib.onblur=()=>{ia.value=db.people.a.income?db.people.a.income.toLocaleString("es-CO"):"";ib.value=db.people.b.income?db.people.b.income.toLocaleString("es-CO"):"";};
+  // formatear miles mientras se escribe, conservando la posición del cursor al final
+  const fmtLive=(el,val)=>{ el.value = val ? val.toLocaleString("es-CO") : ""; };
+  na.oninput=nb.oninput=upd;
+  ia.oninput=()=>{ const n=parseNum(ia.value); fmtLive(ia,n); upd(); };
+  ib.oninput=()=>{ const n=parseNum(ib.value); fmtLive(ib,n); upd(); };
   upd();
 }
 function syncLabels(){
@@ -967,6 +979,7 @@ document.getElementById('lockInput').addEventListener('keydown',e=>{ if(e.key===
 /* ---------- boot ---------- */
 function boot(){
   bindCfg();
+  attachAllMoneyFields();
   renderAll();
   startSync();
 }
