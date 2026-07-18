@@ -227,10 +227,11 @@
 <nav class="tabs">
   <div class="wrap">
     <button data-tab="dash" class="on">Resumen</button>
+    <button data-tab="income">Ingresos</button>
     <button data-tab="exp">Gastos</button>
     <button data-tab="topay">Por pagar</button>
     <button data-tab="cards">Tarjetas</button>
-    <button data-tab="save">Ahorros</button>
+    <button data-tab="save">Cuentas</button>
     <button data-tab="cfg">Proporción</button>
   </div>
 </nav>
@@ -254,6 +255,15 @@
         <div class="cards" id="dashDue" style="grid-template-columns:1fr"></div>
       </div>
     </div>
+  </section>
+
+  <!-- ============ INCOMES ============ -->
+  <section class="view" id="v-income">
+    <div class="add-bar">
+      <h2 class="sec" style="margin:0">Ingresos del mes</h2>
+      <button class="btn" onclick="openInc()">+ Añadir ingreso</button>
+    </div>
+    <div id="incWrap"></div>
   </section>
 
   <!-- ============ EXPENSES ============ -->
@@ -359,10 +369,11 @@
       </div>
       <div class="fld-row">
         <div class="fld"><label>Fecha</label><input type="date" id="expDate" required></div>
-        <div class="fld"><label>Medio de pago</label>
-          <select id="expPay"><option value="">— Efectivo / débito</option></select>
+        <div class="fld"><label>¿De dónde sale?</label>
+          <select id="expSource"><option value="">— Efectivo</option></select>
         </div>
       </div>
+      <p class="hint" id="expSourceHint"></p>
       <p class="hint" id="expSplitHint"></p>
       <button type="submit" class="btn" style="justify-content:center;margin-top:4px">Guardar gasto</button>
     </form>
@@ -410,15 +421,45 @@
           <label><input type="radio" name="sw" value="b"><span id="ssegB">Novia</span></label>
         </div>
       </div>
-      <div class="fld"><label>Nombre</label><input type="text" id="sName" required placeholder="Ahorro viaje, fondo bebé, emergencias..."></div>
+      <div class="fld"><label>Nombre</label><input type="text" id="sName" required placeholder="Falabella, Global66, ahorro viaje..."></div>
       <div class="fld"><label>Tipo</label>
-        <select id="sType"><option value="save">Ahorro / meta</option><option value="acct">Cuenta corriente</option></select>
+        <select id="sType"><option value="acct">Cuenta (donde entra/sale plata)</option><option value="save">Ahorro / meta</option></select>
       </div>
       <div class="fld-row">
-        <div class="fld"><label>Saldo actual</label><input type="text" id="sBal" inputmode="numeric" required placeholder="0"></div>
+        <div class="fld"><label>Saldo inicial</label><input type="text" id="sBal" inputmode="numeric" required placeholder="0"></div>
         <div class="fld"><label>Meta (opcional)</label><input type="text" id="sGoal" inputmode="numeric" placeholder="0"></div>
       </div>
+      <p class="hint">El saldo inicial es lo que hay hoy en la cuenta. De ahí en adelante sube solo con los ingresos que registres y baja con los gastos que salgan de ella.</p>
       <button type="submit" class="btn" style="justify-content:center;margin-top:4px">Guardar cuenta</button>
+    </form>
+  </div>
+
+  <!-- income modal -->
+  <div class="modal" id="mInc" style="display:none">
+    <div class="mh"><h3>Nuevo ingreso</h3><button class="x" onclick="closeModal()">×</button></div>
+    <form onsubmit="saveInc(event)">
+      <div class="fld"><label>¿De quién es el ingreso?</label>
+        <div class="seg">
+          <label><input type="radio" name="iw" value="a" checked><span id="isegA">Nico</span></label>
+          <label><input type="radio" name="iw" value="b"><span id="isegB">Mari</span></label>
+          <label><input type="radio" name="iw" value="shared"><span>Compartido</span></label>
+        </div>
+      </div>
+      <div class="fld"><label>Descripción</label><input type="text" id="incDesc" required placeholder="Salario, trabajo extra, freelance..."></div>
+      <div class="fld-row">
+        <div class="fld"><label>Monto</label><input type="text" id="incAmt" inputmode="numeric" required placeholder="0"></div>
+        <div class="fld"><label>Tipo</label>
+          <select id="incCat"><option>Salario</option><option>Trabajo extra</option><option>Freelance</option><option>Bonificación</option><option>Otro</option></select>
+        </div>
+      </div>
+      <div class="fld-row">
+        <div class="fld"><label>Fecha</label><input type="date" id="incDate" required></div>
+        <div class="fld"><label>¿A qué cuenta entró?</label>
+          <select id="incAcc"></select>
+        </div>
+      </div>
+      <p class="hint" id="incAccHint"></p>
+      <button type="submit" class="btn" style="justify-content:center;margin-top:4px">Guardar ingreso</button>
     </form>
   </div>
 </div>
@@ -456,8 +497,25 @@ let db = blankDB();
 function blankDB(){
   return {
     people:{a:{name:"Nico",income:0}, b:{name:"Mari",income:0}},
-    cards:[], savings:[], expenses:[]
+    cards:[], savings:[], expenses:[], incomes:[]
   };
+}
+/* Migra cuentas viejas: el antiguo 'bal' (saldo actual) pasa a 'bal0' (saldo inicial).
+   De ahí en adelante el saldo real se calcula: bal0 + ingresos - gastos de esa cuenta. */
+function migrateAccounts(){
+  (db.savings||[]).forEach(s=>{
+    if(s.bal0===undefined){ s.bal0 = (s.bal!==undefined? s.bal : 0); }
+  });
+}
+/* Saldo real de una cuenta = saldo inicial + ingresos que entraron - gastos que salieron.
+   Solo cuentan los gastos con débito/efectivo desde esa cuenta (no los de tarjeta de crédito). */
+function accountBalance(accId){
+  const acc=(db.savings||[]).find(s=>s.id===accId);
+  if(!acc) return 0;
+  let bal=acc.bal0||0;
+  (db.incomes||[]).forEach(i=>{ if(i.acc===accId) bal+=i.amt; });
+  (db.expenses||[]).forEach(e=>{ if(e.acc===accId && !e.pay) bal-=e.amt; });
+  return bal;
 }
 function setSync(state,txt){
   const el=document.getElementById('syncStatus');
@@ -507,7 +565,8 @@ async function startSync(){
 function applyRemote(nd){
   remoteApplying=true;
   db=nd;
-  if(!db.cards)db.cards=[]; if(!db.savings)db.savings=[]; if(!db.expenses)db.expenses=[];
+  if(!db.cards)db.cards=[]; if(!db.savings)db.savings=[]; if(!db.expenses)db.expenses=[]; if(!db.incomes)db.incomes=[];
+  migrateAccounts();
   bindCfg(); renderAll();
   remoteApplying=false;
 }
@@ -584,8 +643,8 @@ function bindCfg(){
 }
 function syncLabels(){
   const A=db.people.a.name, B=db.people.b.name;
-  ["segA","csegA","ssegA"].forEach(id=>{const e=document.getElementById(id);if(e)e.textContent=A;});
-  ["segB","csegB","ssegB"].forEach(id=>{const e=document.getElementById(id);if(e)e.textContent=B;});
+  ["segA","csegA","ssegA","isegA"].forEach(id=>{const e=document.getElementById(id);if(e)e.textContent=A;});
+  ["segB","csegB","ssegB","isegB"].forEach(id=>{const e=document.getElementById(id);if(e)e.textContent=B;});
 }
 
 /* ---------- days until helper ---------- */
@@ -712,16 +771,56 @@ function renderCards(){
 /* ---------- render: savings ---------- */
 function renderSave(){
   const w=document.getElementById('saveWrap');
-  if(!db.savings.length){ w.innerHTML=empty("🏦","Aún no hay cuentas. Añade cuentas de ahorro individuales o colectivas."); return; }
+  if(!db.savings.length){ w.innerHTML=empty("🏦","Aún no hay cuentas. Añade tus cuentas (Falabella, Global66...) o metas de ahorro."); return; }
   w.innerHTML='<div class="cards">'+db.savings.map(s=>{
-    const goalBar = s.goal>0 ? '<div class="bar"><i style="width:'+Math.min(100,s.bal/s.goal*100)+'%"></i></div><div class="split-note">'+Math.round(s.bal/s.goal*100)+'% de la meta '+fmt(s.goal)+'</div>' : '';
+    const bal=accountBalance(s.id);
+    const goalBar = s.goal>0 ? '<div class="bar"><i style="width:'+Math.min(100,Math.max(0,bal/s.goal*100))+'%"></i></div><div class="split-note">'+Math.round(bal/s.goal*100)+'% de la meta '+fmt(s.goal)+'</div>' : '';
+    // desglose de movimientos de la cuenta
+    let ingresos=0, gastos=0;
+    (db.incomes||[]).forEach(i=>{ if(i.acc===s.id) ingresos+=i.amt; });
+    (db.expenses||[]).forEach(e=>{ if(e.acc===s.id && !e.pay) gastos+=e.amt; });
+    const rows = (ingresos||gastos) ? `<div class="rows">
+        <div class="r"><span class="lab">Saldo inicial</span><span class="val">${fmt(s.bal0||0)}</span></div>
+        ${ingresos?`<div class="r"><span class="lab">+ Ingresos</span><span class="val ok">${fmt(ingresos)}</span></div>`:''}
+        ${gastos?`<div class="r"><span class="lab">− Gastos</span><span class="val warn">${fmt(gastos)}</span></div>`:''}
+      </div>` : '';
     return `<div class="card">
       <button class="del" onclick="delItem('savings','${s.id}')">×</button>
       <span class="who-tag ${whoTagClass(s.who)}"><span class="dot ${whoDot(s.who)}"></span>${whoName(s.who)}</span>
       <h3 style="margin-top:8px">${esc(s.name)}</h3>
-      <div class="big">${fmt(s.bal)}</div>
-      <div class="meta">${s.type==='save'?'ahorro':'cuenta'}</div>
+      <div class="big">${fmt(bal)}</div>
+      <div class="meta">${s.type==='save'?'ahorro / meta':'saldo disponible'}</div>
       ${goalBar}
+      ${rows}
+    </div>`;
+  }).join('')+'</div>';
+}
+
+/* ---------- render: incomes ---------- */
+function monthIncomes(){
+  const mk=monthKey(curMonth);
+  return (db.incomes||[]).filter(i=>i.date && i.date.slice(0,7)===mk);
+}
+function renderInc(){
+  const w=document.getElementById('incWrap');
+  const list=monthIncomes().sort((a,b)=>b.date.localeCompare(a.date));
+  if(!list.length){ w.innerHTML=empty("💰","No hay ingresos este mes. Pulsa «Añadir ingreso» para registrar tu salario o trabajos extra."); return; }
+  const total=list.reduce((s,i)=>s+i.amt,0);
+  w.innerHTML=`<div class="stat-row"><div class="stat accent"><div class="k">Total ingresos del mes</div><div class="v">${fmt(total)}</div><div class="sub">${list.length} ingreso${list.length===1?'':'s'}</div></div></div>`
+    +'<div class="exp-list">'+list.map(i=>{
+    const accName = i.acc ? (db.savings.find(s=>s.id===i.acc)||{}).name : "";
+    return `<div class="exp">
+      <div class="desc">
+        <span class="t">${esc(i.desc)}</span>
+        <span class="s">
+          <span class="who-tag ${whoTagClass(i.who)}" style="padding:1px 7px"><span class="dot ${whoDot(i.who)}"></span>${whoName(i.who)}</span>
+          <span class="cat-chip">${esc(i.cat)}</span>
+          <span>${i.date.slice(8,10)}/${i.date.slice(5,7)}</span>
+          ${accName?'<span>→ '+esc(accName)+'</span>':''}
+        </span>
+      </div>
+      <div class="amt ok">+${fmt(i.amt)}</div>
+      <button class="xdel" onclick="delItem('incomes','${i.id}')">×</button>
     </div>`;
   }).join('')+'</div>';
 }
@@ -737,7 +836,9 @@ function renderExp(){
     if(e.who==="shared"){
       splitTxt=`<span class="split-note">${db.people.a.name} ${fmt(e.amt*p.a)} · ${db.people.b.name} ${fmt(e.amt*p.b)}</span>`;
     }
-    const payName = e.pay ? (db.cards.find(c=>c.id===e.pay)||{}).name : "";
+    let srcName="";
+    if(e.pay){ srcName='💳 '+((db.cards.find(c=>c.id===e.pay)||{}).name||''); }
+    else if(e.acc){ srcName=((db.savings.find(s=>s.id===e.acc)||{}).name||''); }
     return `<div class="exp">
       <div class="desc">
         <span class="t">${esc(e.desc)}</span>
@@ -745,7 +846,7 @@ function renderExp(){
           <span class="who-tag ${whoTagClass(e.who)}" style="padding:1px 7px"><span class="dot ${whoDot(e.who)}"></span>${whoName(e.who)}</span>
           <span class="cat-chip">${esc(e.cat)}</span>
           <span>${e.date.slice(8,10)}/${e.date.slice(5,7)}</span>
-          ${payName?'<span>· '+esc(payName)+'</span>':''}
+          ${srcName?'<span>· '+esc(srcName)+'</span>':''}
         </span>
         ${splitTxt}
       </div>
@@ -770,13 +871,15 @@ function renderDash(){
   const oweA = totalShared*p.a + ownA;
   const oweB = totalShared*p.b + ownB;
   const totalDebt=db.cards.reduce((s,c)=>s+c.debt,0);
-  const totalSave=db.savings.filter(s=>s.type==='save').reduce((s,x)=>s+x.bal,0);
+  const totalSave=db.savings.filter(s=>s.type==='save').reduce((s,x)=>s+accountBalance(x.id),0);
+  const totalIncome=monthIncomes().reduce((s,i)=>s+i.amt,0);
+  const balance=totalIncome-total;
 
   document.getElementById('dashStats').innerHTML=`
-    <div class="stat accent"><div class="k">Gasto total del mes</div><div class="v">${fmt(total)}</div><div class="sub">${list.length} movimiento${list.length===1?'':'s'}</div></div>
-    <div class="stat"><div class="k">Gastos compartidos</div><div class="v sm">${fmt(totalShared)}</div><div class="sub">se dividen ${Math.round(p.a*100)}/${Math.round(p.b*100)}</div></div>
-    <div class="stat"><div class="k">Deuda en tarjetas</div><div class="v sm">${fmt(totalDebt)}</div><div class="sub">${db.cards.length} tarjeta${db.cards.length===1?'':'s'}</div></div>
-    <div class="stat"><div class="k">Total ahorrado</div><div class="v sm">${fmt(totalSave)}</div><div class="sub">metas y fondos</div></div>`;
+    <div class="stat accent"><div class="k">Ingresos del mes</div><div class="v">${fmt(totalIncome)}</div><div class="sub">${monthIncomes().length} ingreso${monthIncomes().length===1?'':'s'}</div></div>
+    <div class="stat"><div class="k">Gasto total del mes</div><div class="v sm">${fmt(total)}</div><div class="sub">${list.length} movimiento${list.length===1?'':'s'}</div></div>
+    <div class="stat"><div class="k">Balance del mes</div><div class="v sm ${balance<0?'':''}" style="color:${balance<0?'var(--warn)':'var(--ok)'}">${balance<0?'−':'+'}${fmt(Math.abs(balance))}</div><div class="sub">ingresos − gastos</div></div>
+    <div class="stat"><div class="k">Deuda en tarjetas</div><div class="v sm">${fmt(totalDebt)}</div><div class="sub">${db.cards.length} tarjeta${db.cards.length===1?'':'s'}</div></div>`;
 
   // owe cards
   document.getElementById('oweCards').innerHTML=`
@@ -845,13 +948,13 @@ function esc(s){ return String(s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;',
 function renderAll(){
   document.getElementById('mLabel').textContent=monthLabel(curMonth);
   syncLabels();
-  renderDash(); renderExp(); renderTopay(); renderCards(); renderSave();
+  renderDash(); renderInc(); renderExp(); renderTopay(); renderCards(); renderSave();
 }
 
 /* ---------- modals ---------- */
 function showModal(id){
   document.getElementById('scrim').classList.add('on');
-  ['mExp','mCard','mSave'].forEach(m=>document.getElementById(m).style.display='none');
+  ['mExp','mCard','mSave','mInc'].forEach(m=>document.getElementById(m).style.display='none');
   document.getElementById(id).style.display='block';
 }
 function closeModal(){ document.getElementById('scrim').classList.remove('on'); }
@@ -862,14 +965,26 @@ function openExp(){
   document.getElementById('expAmt').value='';
   document.getElementById('expDate').value=new Date().toISOString().slice(0,10);
   document.querySelector('input[name=ew][value=shared]').checked=true;
-  // payment method dropdown
-  const sel=document.getElementById('expPay');
-  sel.innerHTML='<option value="">— Efectivo / débito</option>'+db.cards.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  updateSplitHint();
+  // fuente: efectivo, cuentas (débito) y tarjetas (crédito)
+  const accts=(db.savings||[]).filter(s=>s.type==='acct');
+  const sel=document.getElementById('expSource');
+  let opts='<option value="">— Efectivo</option>';
+  if(accts.length) opts+='<optgroup label="Débito (baja el saldo)">'+accts.map(a=>`<option value="acc:${a.id}">${esc(a.name)}</option>`).join('')+'</optgroup>';
+  if(db.cards.length) opts+='<optgroup label="Tarjeta de crédito (a la deuda)">'+db.cards.map(c=>`<option value="card:${c.id}">${esc(c.name)}</option>`).join('')+'</optgroup>';
+  sel.innerHTML=opts;
+  updateSplitHint(); updateSourceHint();
   showModal('mExp');
 }
 document.querySelectorAll('input[name=ew]').forEach(r=>r.onchange=updateSplitHint);
 document.getElementById('expAmt').addEventListener('input',updateSplitHint);
+document.getElementById('expSource').addEventListener('change',updateSourceHint);
+function updateSourceHint(){
+  const v=document.getElementById('expSource').value;
+  const h=document.getElementById('expSourceHint');
+  if(v.startsWith('acc:')){ h.textContent='Sale por débito: bajará el saldo de esa cuenta.'; }
+  else if(v.startsWith('card:')){ h.textContent='Compra a crédito: suma a la deuda de la tarjeta y aparece en «Por pagar». No baja ninguna cuenta ahora.'; }
+  else { h.textContent='Efectivo: no afecta el saldo de ninguna cuenta.'; }
+}
 function updateSplitHint(){
   const who=document.querySelector('input[name=ew]:checked').value;
   const amt=parseNum(document.getElementById('expAmt').value);
@@ -883,18 +998,56 @@ function updateSplitHint(){
 }
 function saveExp(e){
   e.preventDefault();
-  db.expenses.push({
+  const src=document.getElementById('expSource').value;
+  const rec={
     id:uid(),
     who:document.querySelector('input[name=ew]:checked').value,
     desc:document.getElementById('expDesc').value.trim(),
     amt:parseNum(document.getElementById('expAmt').value),
     cat:document.getElementById('expCat').value,
     date:document.getElementById('expDate').value,
-    pay:document.getElementById('expPay').value||null
+    pay:null,  // id de tarjeta de crédito (afecta deuda / "Por pagar")
+    acc:null   // id de cuenta de débito (baja saldo)
+  };
+  if(src.startsWith('card:')) rec.pay=src.slice(5);
+  else if(src.startsWith('acc:')) rec.acc=src.slice(4);
+  db.expenses.push(rec);
+  save(); closeModal();
+  const d=document.getElementById('expDate').value;
+  curMonth=new Date(d+"T12:00:00");
+  renderAll();
+}
+
+function openInc(){
+  document.getElementById('incDesc').value='';
+  document.getElementById('incAmt').value='';
+  document.getElementById('incDate').value=new Date().toISOString().slice(0,10);
+  document.querySelector('input[name=iw][value=a]').checked=true;
+  const accts=(db.savings||[]).filter(s=>s.type==='acct');
+  const sel=document.getElementById('incAcc');
+  if(accts.length){
+    sel.innerHTML=accts.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('');
+    document.getElementById('incAccHint').textContent='El ingreso subirá el saldo de esta cuenta.';
+  } else {
+    sel.innerHTML='<option value="">— No hay cuentas aún</option>';
+    document.getElementById('incAccHint').textContent='Primero crea una cuenta (ej. Falabella, Global66) en la pestaña Cuentas para poder asignar el ingreso.';
+  }
+  attachThousands(document.getElementById('incAmt'));
+  showModal('mInc');
+}
+function saveInc(e){
+  e.preventDefault();
+  db.incomes.push({
+    id:uid(),
+    who:document.querySelector('input[name=iw]:checked').value,
+    desc:document.getElementById('incDesc').value.trim(),
+    amt:parseNum(document.getElementById('incAmt').value),
+    cat:document.getElementById('incCat').value,
+    date:document.getElementById('incDate').value,
+    acc:document.getElementById('incAcc').value||null
   });
   save(); closeModal();
-  // jump to the month of the expense
-  const d=document.getElementById('expDate').value;
+  const d=document.getElementById('incDate').value;
   curMonth=new Date(d+"T12:00:00");
   renderAll();
 }
@@ -923,7 +1076,7 @@ function saveCard(e){
 function openSave(){
   ['sName','sBal','sGoal'].forEach(id=>document.getElementById(id).value='');
   document.querySelector('input[name=sw][value=shared]').checked=true;
-  document.getElementById('sType').value='save';
+  document.getElementById('sType').value='acct';
   showModal('mSave');
 }
 function saveSave(e){
@@ -933,7 +1086,7 @@ function saveSave(e){
     who:document.querySelector('input[name=sw]:checked').value,
     name:document.getElementById('sName').value.trim(),
     type:document.getElementById('sType').value,
-    bal:parseNum(document.getElementById('sBal').value),
+    bal0:parseNum(document.getElementById('sBal').value),
     goal:parseNum(document.getElementById('sGoal').value)
   });
   save(); closeModal(); renderAll();
@@ -955,7 +1108,7 @@ function exportData(){
 document.getElementById('importFile').onchange=e=>{
   const f=e.target.files[0]; if(!f)return;
   const r=new FileReader();
-  r.onload=()=>{ try{ const d=JSON.parse(r.result); if(d.people){db=d; if(!db.cards)db.cards=[]; if(!db.savings)db.savings=[]; if(!db.expenses)db.expenses=[]; bindCfg(); renderAll(); save(); alert('Datos importados y sincronizados.');} }catch(err){alert('Archivo no válido.');} };
+  r.onload=()=>{ try{ const d=JSON.parse(r.result); if(d.people){db=d; if(!db.cards)db.cards=[]; if(!db.savings)db.savings=[]; if(!db.expenses)db.expenses=[]; if(!db.incomes)db.incomes=[]; migrateAccounts(); bindCfg(); renderAll(); save(); alert('Datos importados y sincronizados.');} }catch(err){alert('Archivo no válido.');} };
   r.readAsText(f);
 };
 
