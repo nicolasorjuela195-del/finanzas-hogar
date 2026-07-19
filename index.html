@@ -64,6 +64,11 @@
   .card .del{position:absolute;top:10px;right:10px;background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:16px;line-height:1;opacity:0;transition:opacity .15s}
   .card:hover .del{opacity:1}
   .card .del:hover{color:var(--clay)}
+  .card .edit{position:absolute;top:10px;right:34px;background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:14px;line-height:1;opacity:0;transition:opacity .15s}
+  .card:hover .edit{opacity:1}
+  .card .edit:hover{color:var(--gold)}
+  .exp .xedit{background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:14px}
+  .exp .xedit:hover{color:var(--gold)}
 
   .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:20px}
   .stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;min-width:0;overflow:hidden}
@@ -101,7 +106,7 @@
 
   /* expense list */
   .exp-list{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow)}
-  .exp{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--line-soft)}
+  .exp{display:grid;grid-template-columns:1fr auto auto auto;gap:10px;align-items:center;padding:13px 16px;border-bottom:1px solid var(--line-soft)}
   .exp:last-child{border-bottom:none}
   .exp:hover{background:#fbf8f1}
   .exp .desc{display:flex;flex-direction:column;gap:3px;min-width:0}
@@ -429,10 +434,8 @@
         </div>
       </div>
       <div class="fld"><label>Nombre de la tarjeta</label><input type="text" id="cName" required placeholder="Visa Bancolombia, Amex..."></div>
-      <div class="fld-row">
-        <div class="fld"><label>Deuda actual</label><input type="text" id="cDebt" inputmode="numeric" placeholder="0"></div>
-        <div class="fld"><label>Cupo total (opcional)</label><input type="text" id="cLimit" inputmode="numeric" placeholder="0"></div>
-      </div>
+      <div class="fld"><label>Cupo total (opcional)</label><input type="text" id="cLimit" inputmode="decimal" placeholder="0"></div>
+      <p class="hint">La deuda de la tarjeta se calcula sola: es la suma de las compras que le vas cargando y que aún no has pagado. No necesitas escribirla.</p>
       <div class="fld-row">
         <div class="fld"><label>Día de corte</label><input type="number" id="cCut" min="1" max="31" required placeholder="Ej: 8"></div>
         <div class="fld"><label>Día de pago</label><input type="number" id="cPay" min="1" max="31" required placeholder="Ej: 25"></div>
@@ -555,6 +558,21 @@ function accountBalance(accId){
   (db.expenses||[]).forEach(e=>{ if(e.acc===accId && !e.pay) bal-=e.amt; });
   return bal;
 }
+/* Deuda calculada de una tarjeta = suma de todas las compras cargadas a ella
+   cuya fecha de pago aún no ha llegado (Opción A: se calcula sola). */
+function cardDebt(cardId){
+  const card=db.cards.find(c=>c.id===cardId);
+  if(!card) return 0;
+  const today=new Date(); today.setHours(0,0,0,0);
+  let debt=0;
+  (db.expenses||[]).forEach(e=>{
+    if(e.pay===cardId){
+      const cyc=cycleFor(e.date, card);
+      if(cyc.due >= today) debt+=e.amt; // aún no se ha pagado
+    }
+  });
+  return debt;
+}
 function setSync(state,txt){
   const el=document.getElementById('syncStatus');
   el.className='sync '+state;
@@ -650,7 +668,7 @@ function attachThousands(el){
   el.addEventListener('input',()=>{ el.value = formatLiveCO(el.value); });
 }
 function attachAllMoneyFields(){
-  ['expAmt','cDebt','cLimit','sBal','sGoal','incAmt'].forEach(id=>attachThousands(document.getElementById(id)));
+  ['expAmt','cLimit','sBal','sGoal','incAmt'].forEach(id=>attachThousands(document.getElementById(id)));
 }
 /* Formato compacto para tarjetas de resumen: sin decimales, para que quepa en el celular. */
 const fmtK = n => "$" + Math.round(n||0).toLocaleString("es-CO");
@@ -831,7 +849,8 @@ function renderCards(){
   if(!db.cards.length){ w.innerHTML=empty("💳","Aún no hay tarjetas. Añade tus tarjetas de crédito para ver cortes y pagos."); return; }
   w.innerHTML='<div class="cards">'+db.cards.map(c=>{
     const cut=nextOccurrence(c.cut);
-    const useBar = c.limit>0 ? '<div class="bar gold"><i style="width:'+Math.min(100,c.debt/c.limit*100)+'%"></i></div><div class="split-note">Usas '+Math.round(c.debt/c.limit*100)+'% del cupo</div>' : '';
+    const debt=cardDebt(c.id);
+    const useBar = c.limit>0 ? '<div class="bar gold"><i style="width:'+Math.min(100,debt/c.limit*100)+'%"></i></div><div class="split-note">Usas '+Math.round(debt/c.limit*100)+'% del cupo</div>' : '';
     // acumulado del ciclo que aún no cierra + próxima fecha de pago real
     const todayISO=new Date().toISOString().slice(0,10);
     const curCycle=cycleFor(todayISO,c);
@@ -848,10 +867,11 @@ function renderCards(){
     const payDateStr=curCycle.due.toLocaleDateString("es-CO",{day:'numeric',month:'short'});
     return `<div class="card">
       <button class="del" onclick="delItem('cards','${c.id}')">×</button>
+      <button class="edit" onclick="openCard('${c.id}')">✎</button>
       <span class="who-tag ${whoTagClass(c.who)}"><span class="dot ${whoDot(c.who)}"></span>${whoName(c.who)}</span>
       <h3 style="margin-top:8px">${esc(c.name)}</h3>
-      <div class="big">${fmt(c.debt)}</div>
-      <div class="meta">de deuda actual</div>
+      <div class="big">${fmt(debt)}</div>
+      <div class="meta">deuda sin pagar (se calcula sola)</div>
       ${useBar}
       <div class="rows">
         <div class="r"><span class="lab">Compras del ciclo actual</span><span class="val">${fmt(cycleTotal)}</span></div>
@@ -881,6 +901,7 @@ function renderSave(){
       </div>` : '';
     return `<div class="card">
       <button class="del" onclick="delItem('savings','${s.id}')">×</button>
+      <button class="edit" onclick="openSave('${s.id}')">✎</button>
       <span class="who-tag ${whoTagClass(s.who)}"><span class="dot ${whoDot(s.who)}"></span>${whoName(s.who)}</span>
       <h3 style="margin-top:8px">${esc(s.name)}</h3>
       <div class="big">${fmt(bal)}</div>
@@ -915,6 +936,7 @@ function renderInc(){
         </span>
       </div>
       <div class="amt ok">+${fmt(i.amt)}</div>
+      <button class="xedit" onclick="openInc('${i.id}')">✎</button>
       <button class="xdel" onclick="delItem('incomes','${i.id}')">×</button>
     </div>`;
   }).join('')+'</div>';
@@ -923,27 +945,53 @@ function renderInc(){
 /* ---------- render: expenses ---------- */
 function renderExp(){
   const w=document.getElementById('expWrap');
-  const list=monthExpenses().filter(e=>matchPerson(e.who)).sort((a,b)=>b.date.localeCompare(a.date));
-  if(!list.length){ w.innerHTML=empty("🧾","No hay gastos"+personSuffix()+" este mes. Pulsa «Añadir gasto» para empezar."); return; }
   const p=pct();
-  // resumen fijo vs variable arriba
+  const all=monthExpenses();
+  // qué gastos se muestran según el filtro
+  let list;
+  const personView = (curPerson==="a"||curPerson==="b");
+  if(curPerson==="all"){ list=all.slice(); }
+  else if(personView){ list=all.filter(e=>e.who===curPerson || e.who==="shared"); }
+  else { list=all.filter(e=>e.who==="shared"); } // compartido
+  list.sort((a,b)=>b.date.localeCompare(a.date));
+  if(!list.length){ w.innerHTML=empty("🧾","No hay gastos"+personSuffix()+" este mes. Pulsa «Añadir gasto» para empezar."); return; }
+
+  // el monto que "pesa" para la persona actual en un gasto dado
+  const share = e => {
+    if(!personView) return e.amt;               // Todo o Compartido: monto completo
+    if(e.who==="shared") return e.amt*(curPerson==="a"?p.a:p.b); // mi parte del compartido
+    return e.amt;                                // gasto 100% mío
+  };
+
+  // resumen fijo vs variable (usando la parte que corresponde)
   let fijo=0, variable=0;
-  list.forEach(e=>{ if(e.kind==='variable') variable+=e.amt; else fijo+=e.amt; });
+  list.forEach(e=>{ const v=share(e); if(e.kind==='variable') variable+=v; else fijo+=v; });
   const summary=`<div class="stat-row">
     <div class="stat"><div class="k">Gastos fijos</div><div class="v sm">${fmt(fijo)}</div><div class="sub">arriendo, servicios…</div></div>
     <div class="stat"><div class="k">Gastos variables</div><div class="v sm">${fmt(variable)}</div><div class="sub">salidas, ocio…</div></div>
   </div>`;
+
   w.innerHTML=summary+'<div class="exp-list">'+list.map(e=>{
-    let splitTxt="";
-    if(e.who==="shared"){
-      splitTxt=`<span class="split-note">${db.people.a.name} ${fmt(e.amt*p.a)} · ${db.people.b.name} ${fmt(e.amt*p.b)}</span>`;
-    }
     let srcName="";
     if(e.pay){ srcName='💳 '+((db.cards.find(c=>c.id===e.pay)||{}).name||''); }
     else if(e.acc){ srcName=((db.savings.find(s=>s.id===e.acc)||{}).name||''); }
     const kindChip = e.kind==='variable'
       ? '<span class="cat-chip" style="background:var(--clay-soft);color:#8a3d1e">Variable</span>'
       : '<span class="cat-chip" style="background:var(--teal-soft);color:#1e564a">Fijo</span>';
+
+    // monto mostrado y nota secundaria
+    let mainAmt, subNote="";
+    if(personView && e.who==="shared"){
+      mainAmt=fmt(share(e));  // mi parte, grande
+      const pctMe=Math.round((curPerson==="a"?p.a:p.b)*100);
+      subNote=`<span class="split-note">tu ${pctMe}% de ${fmt(e.amt)} (compartido)</span>`;
+    } else {
+      mainAmt=fmt(e.amt);
+      if(e.who==="shared"){ // vista Todo o Compartido
+        subNote=`<span class="split-note">${db.people.a.name} ${fmt(e.amt*p.a)} · ${db.people.b.name} ${fmt(e.amt*p.b)}</span>`;
+      }
+    }
+
     return `<div class="exp">
       <div class="desc">
         <span class="t">${esc(e.desc)}</span>
@@ -954,9 +1002,10 @@ function renderExp(){
           <span>${e.date.slice(8,10)}/${e.date.slice(5,7)}</span>
           ${srcName?'<span>· '+esc(srcName)+'</span>':''}
         </span>
-        ${splitTxt}
+        ${subNote}
       </div>
-      <div class="amt">${fmt(e.amt)}</div>
+      <div class="amt">${mainAmt}${personView&&e.who==="shared"?'<div class="split-note" style="text-align:right;font-weight:400">de '+fmt(e.amt)+'</div>':''}</div>
+      <button class="xedit" onclick="openExp('${e.id}')">✎</button>
       <button class="xdel" onclick="delItem('expenses','${e.id}')">×</button>
     </div>`;
   }).join('')+'</div>';
@@ -976,7 +1025,7 @@ function renderDash(){
   const total=totalShared+ownA+ownB;
   const oweA = totalShared*p.a + ownA;
   const oweB = totalShared*p.b + ownB;
-  const totalDebt=db.cards.reduce((s,c)=>s+c.debt,0);
+  const totalDebt=db.cards.reduce((s,c)=>s+cardDebt(c.id),0);
 
   // gastos a crédito (aún no salen del bolsillo) por persona
   let credShared=0, credA=0, credB=0;
@@ -1086,20 +1135,28 @@ function renderAll(){
 }
 
 /* ---------- modals ---------- */
+let editing=null; // {type:'exp'|'inc'|'card'|'save', id:'...'} o null si es nuevo
+function setModalTitle(modalId, txt){
+  const h=document.querySelector('#'+modalId+' .mh h3'); if(h) h.textContent=txt;
+}
 function showModal(id){
   document.getElementById('scrim').classList.add('on');
   ['mExp','mCard','mSave','mInc'].forEach(m=>document.getElementById(m).style.display='none');
   document.getElementById(id).style.display='block';
 }
-function closeModal(){ document.getElementById('scrim').classList.remove('on'); }
+function closeModal(){ document.getElementById('scrim').classList.remove('on'); editing=null; }
 document.getElementById('scrim').onclick=e=>{ if(e.target.id==='scrim') closeModal(); };
 
-function openExp(){
-  document.getElementById('expDesc').value='';
-  document.getElementById('expAmt').value='';
-  document.getElementById('expDate').value=new Date().toISOString().slice(0,10);
-  document.querySelector('input[name=ew][value=shared]').checked=true;
-  document.querySelector('input[name=ek][value=fijo]').checked=true;
+function openExp(id){
+  const ex = id ? db.expenses.find(x=>x.id===id) : null;
+  editing = ex ? {type:'exp', id} : null;
+  setModalTitle('mExp', ex?'Editar gasto':'Nuevo gasto');
+  document.getElementById('expDesc').value = ex?ex.desc:'';
+  document.getElementById('expAmt').value = ex?formatLiveCO(String(ex.amt).replace('.',',')):'';
+  document.getElementById('expDate').value = ex?ex.date:new Date().toISOString().slice(0,10);
+  document.querySelector('input[name=ew][value='+(ex?ex.who:'shared')+']').checked=true;
+  document.querySelector('input[name=ek][value='+(ex&&ex.kind?ex.kind:'fijo')+']').checked=true;
+  if(ex) document.getElementById('expCat').value=ex.cat;
   // fuente: efectivo, cuentas (débito) y tarjetas (crédito)
   const accts=(db.savings||[]).filter(s=>s.type==='acct');
   const sel=document.getElementById('expSource');
@@ -1107,6 +1164,7 @@ function openExp(){
   if(accts.length) opts+='<optgroup label="Débito (baja el saldo)">'+accts.map(a=>`<option value="acc:${a.id}">${esc(a.name)}</option>`).join('')+'</optgroup>';
   if(db.cards.length) opts+='<optgroup label="Tarjeta de crédito (a la deuda)">'+db.cards.map(c=>`<option value="card:${c.id}">${esc(c.name)}</option>`).join('')+'</optgroup>';
   sel.innerHTML=opts;
+  if(ex){ sel.value = ex.pay?('card:'+ex.pay) : ex.acc?('acc:'+ex.acc) : ''; }
   updateSplitHint(); updateSourceHint();
   showModal('mExp');
 }
@@ -1134,31 +1192,37 @@ function updateSplitHint(){
 function saveExp(e){
   e.preventDefault();
   const src=document.getElementById('expSource').value;
-  const rec={
-    id:uid(),
+  const data={
     who:document.querySelector('input[name=ew]:checked').value,
     desc:document.getElementById('expDesc').value.trim(),
     amt:parseNum(document.getElementById('expAmt').value),
     cat:document.getElementById('expCat').value,
     kind:document.querySelector('input[name=ek]:checked').value,
     date:document.getElementById('expDate').value,
-    pay:null,  // id de tarjeta de crédito (afecta deuda / "Por pagar")
-    acc:null   // id de cuenta de débito (baja saldo)
+    pay:null, acc:null
   };
-  if(src.startsWith('card:')) rec.pay=src.slice(5);
-  else if(src.startsWith('acc:')) rec.acc=src.slice(4);
-  db.expenses.push(rec);
+  if(src.startsWith('card:')) data.pay=src.slice(5);
+  else if(src.startsWith('acc:')) data.acc=src.slice(4);
+  if(editing && editing.type==='exp'){
+    const ex=db.expenses.find(x=>x.id===editing.id);
+    if(ex) Object.assign(ex, data);
+  } else {
+    db.expenses.push({id:uid(), ...data});
+  }
   save(); closeModal();
-  const d=document.getElementById('expDate').value;
-  curMonth=new Date(d+"T12:00:00");
+  curMonth=new Date(data.date+"T12:00:00");
   renderAll();
 }
 
-function openInc(){
-  document.getElementById('incDesc').value='';
-  document.getElementById('incAmt').value='';
-  document.getElementById('incDate').value=new Date().toISOString().slice(0,10);
-  document.querySelector('input[name=iw][value=a]').checked=true;
+function openInc(id){
+  const it = id ? (db.incomes||[]).find(x=>x.id===id) : null;
+  editing = it ? {type:'inc', id} : null;
+  setModalTitle('mInc', it?'Editar ingreso':'Nuevo ingreso');
+  document.getElementById('incDesc').value=it?it.desc:'';
+  document.getElementById('incAmt').value=it?formatLiveCO(String(it.amt).replace('.',',')):'';
+  document.getElementById('incDate').value=it?it.date:new Date().toISOString().slice(0,10);
+  document.querySelector('input[name=iw][value='+(it?it.who:'a')+']').checked=true;
+  if(it) document.getElementById('incCat').value=it.cat;
   const accts=(db.savings||[]).filter(s=>s.type==='acct');
   const sel=document.getElementById('incAcc');
   if(accts.length){
@@ -1168,63 +1232,88 @@ function openInc(){
     sel.innerHTML='<option value="">— No hay cuentas aún</option>';
     document.getElementById('incAccHint').textContent='Primero crea una cuenta (ej. Falabella, Global66) en la pestaña Cuentas para poder asignar el ingreso.';
   }
+  if(it && it.acc) sel.value=it.acc;
   attachThousands(document.getElementById('incAmt'));
   showModal('mInc');
 }
 function saveInc(e){
   e.preventDefault();
-  db.incomes.push({
-    id:uid(),
+  const data={
     who:document.querySelector('input[name=iw]:checked').value,
     desc:document.getElementById('incDesc').value.trim(),
     amt:parseNum(document.getElementById('incAmt').value),
     cat:document.getElementById('incCat').value,
     date:document.getElementById('incDate').value,
     acc:document.getElementById('incAcc').value||null
-  });
+  };
+  if(editing && editing.type==='inc'){
+    const it=db.incomes.find(x=>x.id===editing.id);
+    if(it) Object.assign(it, data);
+  } else {
+    db.incomes.push({id:uid(), ...data});
+  }
   save(); closeModal();
-  const d=document.getElementById('incDate').value;
-  curMonth=new Date(d+"T12:00:00");
+  curMonth=new Date(data.date+"T12:00:00");
   renderAll();
 }
 
-function openCard(){
-  ['cName','cDebt','cLimit','cCut','cPay'].forEach(id=>document.getElementById(id).value='');
-  document.getElementById('cPayMonth').value='same';
-  document.querySelector('input[name=cw][value=shared]').checked=true;
+function openCard(id){
+  const c = id ? db.cards.find(x=>x.id===id) : null;
+  editing = c ? {type:'card', id} : null;
+  setModalTitle('mCard', c?'Editar tarjeta':'Nueva tarjeta');
+  document.getElementById('cName').value=c?c.name:'';
+  document.getElementById('cLimit').value=c&&c.limit?formatLiveCO(String(c.limit).replace('.',',')):'';
+  document.getElementById('cCut').value=c?c.cut:'';
+  document.getElementById('cPay').value=c?c.pay:'';
+  document.getElementById('cPayMonth').value=c&&c.payMonth?c.payMonth:'same';
+  document.querySelector('input[name=cw][value='+(c?c.who:'shared')+']').checked=true;
   showModal('mCard');
 }
 function saveCard(e){
   e.preventDefault();
-  db.cards.push({
-    id:uid(),
+  const data={
     who:document.querySelector('input[name=cw]:checked').value,
     name:document.getElementById('cName').value.trim(),
-    debt:parseNum(document.getElementById('cDebt').value),
     limit:parseNum(document.getElementById('cLimit').value),
     cut:Math.min(31,Math.max(1,parseInt(document.getElementById('cCut').value)||1)),
     pay:Math.min(31,Math.max(1,parseInt(document.getElementById('cPay').value)||1)),
     payMonth:document.getElementById('cPayMonth').value
-  });
+  };
+  if(editing && editing.type==='card'){
+    const c=db.cards.find(x=>x.id===editing.id);
+    if(c) Object.assign(c, data);
+  } else {
+    db.cards.push({id:uid(), ...data});
+  }
   save(); closeModal(); renderAll();
 }
 
-function openSave(){
-  ['sName','sBal','sGoal'].forEach(id=>document.getElementById(id).value='');
-  document.querySelector('input[name=sw][value=shared]').checked=true;
-  document.getElementById('sType').value='acct';
+function openSave(id){
+  const s = id ? db.savings.find(x=>x.id===id) : null;
+  editing = s ? {type:'save', id} : null;
+  setModalTitle('mSave', s?'Editar cuenta':'Nueva cuenta');
+  document.getElementById('sName').value=s?s.name:'';
+  document.getElementById('sBal').value=s&&s.bal0?formatLiveCO(String(s.bal0).replace('.',',')):'';
+  document.getElementById('sGoal').value=s&&s.goal?formatLiveCO(String(s.goal).replace('.',',')):'';
+  document.getElementById('sType').value=s?s.type:'acct';
+  document.querySelector('input[name=sw][value='+(s?s.who:'shared')+']').checked=true;
   showModal('mSave');
 }
 function saveSave(e){
   e.preventDefault();
-  db.savings.push({
-    id:uid(),
+  const data={
     who:document.querySelector('input[name=sw]:checked').value,
     name:document.getElementById('sName').value.trim(),
     type:document.getElementById('sType').value,
     bal0:parseNum(document.getElementById('sBal').value),
     goal:parseNum(document.getElementById('sGoal').value)
-  });
+  };
+  if(editing && editing.type==='save'){
+    const s=db.savings.find(x=>x.id===editing.id);
+    if(s) Object.assign(s, data);
+  } else {
+    db.savings.push({id:uid(), ...data});
+  }
   save(); closeModal(); renderAll();
 }
 
