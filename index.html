@@ -66,10 +66,10 @@
   .card .del:hover{color:var(--clay)}
 
   .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:20px}
-  .stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px}
+  .stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;min-width:0;overflow:hidden}
   .stat .k{font-size:12.5px;color:var(--ink-soft);margin-bottom:7px;font-weight:500}
-  .stat .v{font-size:25px;font-weight:600;letter-spacing:-.02em}
-  .stat .v.sm{font-size:20px}
+  .stat .v{font-size:clamp(17px,4.6vw,24px);font-weight:600;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .stat .v.sm{font-size:clamp(15px,4vw,20px)}
   .stat .sub{font-size:12px;color:var(--ink-faint);margin-top:3px}
   .stat.accent{background:var(--ink);color:var(--paper);border-color:var(--ink)}
   .stat.accent .k{color:var(--gold-soft);opacity:.85}
@@ -84,7 +84,7 @@
 
   .card h3{font-size:16px;font-weight:600;margin-bottom:3px;padding-right:20px}
   .card .meta{font-size:12.5px;color:var(--ink-soft)}
-  .card .big{font-size:22px;font-weight:600;margin:10px 0 2px;letter-spacing:-.02em}
+  .card .big{font-size:clamp(18px,5vw,22px);font-weight:600;margin:10px 0 2px;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .card .rows{margin-top:12px;border-top:1px solid var(--line-soft);padding-top:11px;display:flex;flex-direction:column;gap:7px}
   .card .rows .r{display:flex;justify-content:space-between;font-size:13px}
   .card .rows .r .lab{color:var(--ink-soft)}
@@ -168,7 +168,19 @@
   .cat-item .track > i{display:block;height:100%;border-radius:99px}
 
   .two-col{display:grid;grid-template-columns:1fr 1fr;gap:24px}
-  @media(max-width:720px){.two-col{grid-template-columns:1fr}.fld-row{grid-template-columns:1fr}}
+  @media(max-width:720px){
+    .two-col{grid-template-columns:1fr}
+    .fld-row{grid-template-columns:1fr}
+    .stat-row{grid-template-columns:1fr 1fr;gap:10px}
+    .stat{padding:13px 14px}
+    .stat.accent{grid-column:1 / -1}
+    .oweCards, #oweCards{grid-template-columns:1fr !important}
+    .wrap{padding:0 14px}
+    nav.tabs button{padding:14px 13px 12px;font-size:14px}
+  }
+  @media(max-width:380px){
+    .stat-row{grid-template-columns:1fr}
+  }
 
   footer.foot{text-align:center;padding:30px 20px 0;color:var(--ink-faint);font-size:12px}
   footer.foot a{color:var(--ink-soft)}
@@ -640,6 +652,8 @@ function attachThousands(el){
 function attachAllMoneyFields(){
   ['expAmt','cDebt','cLimit','sBal','sGoal','incAmt'].forEach(id=>attachThousands(document.getElementById(id)));
 }
+/* Formato compacto para tarjetas de resumen: sin decimales, para que quepa en el celular. */
+const fmtK = n => "$" + Math.round(n||0).toLocaleString("es-CO");
 const uid = () => Math.random().toString(36).slice(2,9);
 let curMonth = new Date();
 function monthKey(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
@@ -964,29 +978,42 @@ function renderDash(){
   const oweB = totalShared*p.b + ownB;
   const totalDebt=db.cards.reduce((s,c)=>s+c.debt,0);
 
+  // gastos a crédito (aún no salen del bolsillo) por persona
+  let credShared=0, credA=0, credB=0;
+  list.forEach(e=>{
+    if(e.pay){
+      if(e.who==="shared") credShared+=e.amt;
+      else if(e.who==="a") credA+=e.amt;
+      else if(e.who==="b") credB+=e.amt;
+    }
+  });
+
   // --- valores según filtro de persona ---
-  let vIncome, vExpense, vLabel;
+  let vIncome, vExpense, vCredit, vLabel;
   if(curPerson==="a"){
     vIncome=incList.filter(i=>i.who==="a").reduce((s,i)=>s+i.amt,0);
-    vExpense=oweA; vLabel="de "+db.people.a.name;
+    vExpense=oweA; vCredit=credShared*p.a + credA; vLabel="de "+db.people.a.name;
   } else if(curPerson==="b"){
     vIncome=incList.filter(i=>i.who==="b").reduce((s,i)=>s+i.amt,0);
-    vExpense=oweB; vLabel="de "+db.people.b.name;
+    vExpense=oweB; vCredit=credShared*p.b + credB; vLabel="de "+db.people.b.name;
   } else if(curPerson==="shared"){
     vIncome=incList.filter(i=>i.who==="shared").reduce((s,i)=>s+i.amt,0);
-    vExpense=totalShared; vLabel="compartidos";
+    vExpense=totalShared; vCredit=credShared; vLabel="compartidos";
   } else {
     vIncome=incList.reduce((s,i)=>s+i.amt,0);
-    vExpense=total; vLabel="del hogar";
+    vExpense=total; vCredit=credShared+credA+credB; vLabel="del hogar";
   }
-  const balance=vIncome-vExpense;
+  const balAhora = vIncome - (vExpense - vCredit); // no resta lo de crédito
+  const balProy  = vIncome - vExpense;             // resta todo
   const incCount=curPerson==="all"?incList.length:incList.filter(i=>i.who===curPerson).length;
+  const col=n=>n<0?'var(--warn)':'var(--ok)';
 
   document.getElementById('dashStats').innerHTML=`
-    <div class="stat accent"><div class="k">Ingresos ${vLabel}</div><div class="v">${fmt(vIncome)}</div><div class="sub">${incCount} ingreso${incCount===1?'':'s'}</div></div>
-    <div class="stat"><div class="k">Gastos ${vLabel}</div><div class="v sm">${fmt(vExpense)}</div><div class="sub">${curPerson==='all'?list.length+' movimientos':'incluye parte compartida'}</div></div>
-    <div class="stat"><div class="k">Balance del mes</div><div class="v sm" style="color:${balance<0?'var(--warn)':'var(--ok)'}">${balance<0?'−':'+'}${fmt(Math.abs(balance))}</div><div class="sub">ingresos − gastos</div></div>
-    <div class="stat"><div class="k">Deuda en tarjetas</div><div class="v sm">${fmt(totalDebt)}</div><div class="sub">${db.cards.length} tarjeta${db.cards.length===1?'':'s'}</div></div>`;
+    <div class="stat accent"><div class="k">Ingresos ${vLabel}</div><div class="v">${fmtK(vIncome)}</div><div class="sub">${incCount} ingreso${incCount===1?'':'s'}</div></div>
+    <div class="stat"><div class="k">Gastos ${vLabel}</div><div class="v sm">${fmtK(vExpense)}</div><div class="sub">${curPerson==='all'?list.length+' movimientos':'incluye parte compartida'}</div></div>
+    <div class="stat"><div class="k">Disponible ahora</div><div class="v sm" style="color:${col(balAhora)}">${balAhora<0?'−':'+'}${fmtK(Math.abs(balAhora)).slice(1)}</div><div class="sub">sin restar lo de crédito</div></div>
+    <div class="stat"><div class="k">Proyectado</div><div class="v sm" style="color:${col(balProy)}">${balProy<0?'−':'+'}${fmtK(Math.abs(balProy)).slice(1)}</div><div class="sub">ya restando tarjetas</div></div>
+    <div class="stat"><div class="k">Deuda en tarjetas</div><div class="v sm">${fmtK(totalDebt)}</div><div class="sub">${db.cards.length} tarjeta${db.cards.length===1?'':'s'}</div></div>`;
 
   // owe cards
   document.getElementById('oweCards').innerHTML=`
