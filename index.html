@@ -192,6 +192,15 @@
   .sync .sd{width:8px;height:8px;border-radius:50%;background:#6b9e78}
   .sync.off .sd{background:#c0603a}
   .sync.wait .sd{background:#c9a24a}
+
+  /* person selector bar */
+  .person-bar{background:var(--paper);border-bottom:1px solid var(--line-soft);position:sticky;top:49px;z-index:38}
+  .person-bar .wrap{padding-top:12px;padding-bottom:12px}
+  .person-seg{display:inline-flex;background:var(--card);border:1px solid var(--line);border-radius:999px;padding:3px;gap:2px}
+  .person-seg button{background:none;border:none;padding:7px 16px;font-size:13.5px;font-weight:500;color:var(--ink-soft);cursor:pointer;border-radius:999px;font-family:inherit;transition:all .15s}
+  .person-seg button:hover{color:var(--ink)}
+  .person-seg button.on{background:var(--ink);color:var(--paper)}
+  .person-bar.hidden{display:none}
 </style>
 </head>
 <body>
@@ -235,6 +244,17 @@
     <button data-tab="cfg">Proporción</button>
   </div>
 </nav>
+
+<div class="person-bar" id="personBar">
+  <div class="wrap">
+    <div class="person-seg">
+      <button data-person="all" class="on">Todo</button>
+      <button data-person="a">Nico</button>
+      <button data-person="b">Mari</button>
+      <button data-person="shared">Compartido</button>
+    </div>
+  </div>
+</div>
 
 <main class="wrap">
 
@@ -356,6 +376,12 @@
         </div>
       </div>
       <div class="fld"><label>Descripción</label><input type="text" id="expDesc" required placeholder="Mercado, arriendo, salida..."></div>
+      <div class="fld"><label>¿Qué tipo de gasto es?</label>
+        <div class="seg">
+          <label><input type="radio" name="ek" value="fijo" checked><span>Fijo (arriendo, servicios)</span></label>
+          <label><input type="radio" name="ek" value="variable"><span>Variable (salidas, ocio)</span></label>
+        </div>
+      </div>
       <div class="fld-row">
         <div class="fld"><label>Monto</label><input type="text" id="expAmt" inputmode="numeric" required placeholder="0"></div>
         <div class="fld"><label>Categoría</label>
@@ -426,10 +452,10 @@
         <select id="sType"><option value="acct">Cuenta (donde entra/sale plata)</option><option value="save">Ahorro / meta</option></select>
       </div>
       <div class="fld-row">
-        <div class="fld"><label>Saldo inicial</label><input type="text" id="sBal" inputmode="numeric" required placeholder="0"></div>
-        <div class="fld"><label>Meta (opcional)</label><input type="text" id="sGoal" inputmode="numeric" placeholder="0"></div>
+        <div class="fld"><label>Saldo inicial (opcional)</label><input type="text" id="sBal" inputmode="decimal" placeholder="0"></div>
+        <div class="fld"><label>Meta (opcional)</label><input type="text" id="sGoal" inputmode="decimal" placeholder="0"></div>
       </div>
-      <p class="hint">El saldo inicial es lo que hay hoy en la cuenta. De ahí en adelante sube solo con los ingresos que registres y baja con los gastos que salgan de ella.</p>
+      <p class="hint">Puedes dejar el saldo en cero y crear la cuenta vacía. Luego registras el dinero que tienes como un ingreso, y así el balance del mes queda bien. El saldo sube con ingresos y baja con gastos.</p>
       <button type="submit" class="btn" style="justify-content:center;margin-top:4px">Guardar cuenta</button>
     </form>
   </div>
@@ -572,16 +598,47 @@ function applyRemote(nd){
 }
 
 /* ---------- helpers ---------- */
-const fmt = n => "$" + Math.round(n||0).toLocaleString("es-CO");
-const parseNum = s => { const digits=String(s).replace(/[^\d]/g,""); return digits?parseInt(digits,10):0; };
-/* aplica separador de miles en vivo a un campo de texto numérico */
+/* Formato colombiano: punto=miles, coma=decimales. Muestra centavos solo si los hay. */
+const fmt = n => {
+  n = n||0;
+  const hasDec = Math.abs(n - Math.round(n)) > 0.005;
+  return "$" + n.toLocaleString("es-CO", {minimumFractionDigits: hasDec?2:0, maximumFractionDigits:2});
+};
+/* Convierte texto colombiano a número: quita los puntos (miles) y usa la coma como decimal. */
+const parseNum = s => {
+  let t = String(s).replace(/[^\d.,]/g,"");   // solo dígitos, puntos y comas
+  t = t.replace(/\./g,"");                      // quitar separadores de miles
+  t = t.replace(",", ".");                      // coma decimal -> punto para JS
+  const n = parseFloat(t);
+  return isNaN(n) ? 0 : n;
+};
+/* Formatea en vivo respetando que el usuario esté escribiendo decimales tras la coma. */
+function formatLiveCO(raw){
+  if(raw==="") return "";
+  // separar parte entera y decimal según la primera coma
+  let cleaned = raw.replace(/[^\d,]/g,"");      // dígitos y comas (los puntos de miles se recalculan)
+  const firstComma = cleaned.indexOf(",");
+  let intPart, decPart=null;
+  if(firstComma===-1){ intPart = cleaned; }
+  else {
+    intPart = cleaned.slice(0, firstComma).replace(/,/g,"");
+    decPart = cleaned.slice(firstComma+1).replace(/,/g,"").slice(0,2); // máx 2 decimales
+  }
+  intPart = intPart.replace(/^0+(?=\d)/,"");     // sin ceros a la izquierda
+  const intNum = intPart===""?0:parseInt(intPart,10);
+  const intFmt = intPart===""? "" : intNum.toLocaleString("es-CO");
+  if(decPart===null) return intFmt;
+  return (intFmt===""?"0":intFmt) + "," + decPart;
+}
+/* aplica formato colombiano (miles + decimales) en vivo a un campo */
 function attachThousands(el){
   if(!el || el.dataset.thousands) return;
   el.dataset.thousands="1";
-  el.addEventListener('input',()=>{ const n=parseNum(el.value); el.value = n ? n.toLocaleString("es-CO") : ""; });
+  el.setAttribute("inputmode","decimal");
+  el.addEventListener('input',()=>{ el.value = formatLiveCO(el.value); });
 }
 function attachAllMoneyFields(){
-  ['expAmt','cDebt','cLimit','sBal','sGoal'].forEach(id=>attachThousands(document.getElementById(id)));
+  ['expAmt','cDebt','cLimit','sBal','sGoal','incAmt'].forEach(id=>attachThousands(document.getElementById(id)));
 }
 const uid = () => Math.random().toString(36).slice(2,9);
 let curMonth = new Date();
@@ -594,6 +651,7 @@ function pct(){
   return {a:ia/t, b:ib/t};
 }
 function whoName(w){ return w==="a"?db.people.a.name : w==="b"?db.people.b.name : "Compartido"; }
+function personSuffix(){ return curPerson==="all"?"" : curPerson==="shared"?" compartidos" : " de "+(curPerson==="a"?db.people.a.name:db.people.b.name); }
 function whoTagClass(w){ return w==="a"?"who-a": w==="b"?"who-b":"who-shared"; }
 function whoDot(w){ return w==="a"?"dot-a": w==="b"?"dot-b":"dot-shared"; }
 
@@ -603,13 +661,38 @@ function monthExpenses(){
   return db.expenses.filter(e => e.date && e.date.slice(0,7)===mk);
 }
 
+/* ---------- person filter ---------- */
+let curPerson = "all";
+let curTab = "dash";
+const personTabs = ["dash","income","exp"]; // pestañas donde aplica el filtro
+document.querySelectorAll('.person-seg button').forEach(b=>{
+  b.onclick=()=>{
+    document.querySelectorAll('.person-seg button').forEach(x=>x.classList.remove('on'));
+    b.classList.add('on');
+    curPerson=b.dataset.person;
+    renderAll();
+  };
+});
+function updatePersonBar(){
+  const bar=document.getElementById('personBar');
+  if(personTabs.includes(curTab)) bar.classList.remove('hidden');
+  else bar.classList.add('hidden');
+}
+/* ¿este registro (con su campo 'who') se muestra con el filtro actual? */
+function matchPerson(who){
+  if(curPerson==="all") return true;
+  return who===curPerson;
+}
+
 /* ---------- tab nav ---------- */
 document.querySelectorAll('nav.tabs button').forEach(b=>{
   b.onclick=()=>{
     document.querySelectorAll('nav.tabs button').forEach(x=>x.classList.remove('on'));
     document.querySelectorAll('.view').forEach(x=>x.classList.remove('on'));
     b.classList.add('on');
+    curTab=b.dataset.tab;
     document.getElementById('v-'+b.dataset.tab).classList.add('on');
+    updatePersonBar();
     renderAll();
   };
 });
@@ -621,8 +704,8 @@ function bindCfg(){
   const na=document.getElementById('nameA'), nb=document.getElementById('nameB');
   const ia=document.getElementById('incA'), ib=document.getElementById('incB');
   na.value=db.people.a.name; nb.value=db.people.b.name;
-  ia.value=db.people.a.income?db.people.a.income.toLocaleString("es-CO"):"";
-  ib.value=db.people.b.income?db.people.b.income.toLocaleString("es-CO"):"";
+  ia.value=db.people.a.income?formatLiveCO(String(db.people.a.income).replace(".",",")):"";
+  ib.value=db.people.b.income?formatLiveCO(String(db.people.b.income).replace(".",",")):"";
   const upd=()=>{
     db.people.a.name=na.value.trim()||"Nico";
     db.people.b.name=nb.value.trim()||"Mari";
@@ -634,11 +717,9 @@ function bindCfg(){
     document.getElementById('incTotal').textContent=fmt(db.people.a.income+db.people.b.income);
     save(); syncLabels();
   };
-  // formatear miles mientras se escribe, conservando la posición del cursor al final
-  const fmtLive=(el,val)=>{ el.value = val ? val.toLocaleString("es-CO") : ""; };
   na.oninput=nb.oninput=upd;
-  ia.oninput=()=>{ const n=parseNum(ia.value); fmtLive(ia,n); upd(); };
-  ib.oninput=()=>{ const n=parseNum(ib.value); fmtLive(ib,n); upd(); };
+  ia.oninput=()=>{ ia.value=formatLiveCO(ia.value); upd(); };
+  ib.oninput=()=>{ ib.value=formatLiveCO(ib.value); upd(); };
   upd();
 }
 function syncLabels(){
@@ -803,8 +884,8 @@ function monthIncomes(){
 }
 function renderInc(){
   const w=document.getElementById('incWrap');
-  const list=monthIncomes().sort((a,b)=>b.date.localeCompare(a.date));
-  if(!list.length){ w.innerHTML=empty("💰","No hay ingresos este mes. Pulsa «Añadir ingreso» para registrar tu salario o trabajos extra."); return; }
+  const list=monthIncomes().filter(i=>matchPerson(i.who)).sort((a,b)=>b.date.localeCompare(a.date));
+  if(!list.length){ w.innerHTML=empty("💰","No hay ingresos"+personSuffix()+" este mes. Pulsa «Añadir ingreso» para registrar tu salario o trabajos extra."); return; }
   const total=list.reduce((s,i)=>s+i.amt,0);
   w.innerHTML=`<div class="stat-row"><div class="stat accent"><div class="k">Total ingresos del mes</div><div class="v">${fmt(total)}</div><div class="sub">${list.length} ingreso${list.length===1?'':'s'}</div></div></div>`
     +'<div class="exp-list">'+list.map(i=>{
@@ -828,10 +909,17 @@ function renderInc(){
 /* ---------- render: expenses ---------- */
 function renderExp(){
   const w=document.getElementById('expWrap');
-  const list=monthExpenses().sort((a,b)=>b.date.localeCompare(a.date));
-  if(!list.length){ w.innerHTML=empty("🧾","No hay gastos este mes. Pulsa «Añadir gasto» para empezar."); return; }
+  const list=monthExpenses().filter(e=>matchPerson(e.who)).sort((a,b)=>b.date.localeCompare(a.date));
+  if(!list.length){ w.innerHTML=empty("🧾","No hay gastos"+personSuffix()+" este mes. Pulsa «Añadir gasto» para empezar."); return; }
   const p=pct();
-  w.innerHTML='<div class="exp-list">'+list.map(e=>{
+  // resumen fijo vs variable arriba
+  let fijo=0, variable=0;
+  list.forEach(e=>{ if(e.kind==='variable') variable+=e.amt; else fijo+=e.amt; });
+  const summary=`<div class="stat-row">
+    <div class="stat"><div class="k">Gastos fijos</div><div class="v sm">${fmt(fijo)}</div><div class="sub">arriendo, servicios…</div></div>
+    <div class="stat"><div class="k">Gastos variables</div><div class="v sm">${fmt(variable)}</div><div class="sub">salidas, ocio…</div></div>
+  </div>`;
+  w.innerHTML=summary+'<div class="exp-list">'+list.map(e=>{
     let splitTxt="";
     if(e.who==="shared"){
       splitTxt=`<span class="split-note">${db.people.a.name} ${fmt(e.amt*p.a)} · ${db.people.b.name} ${fmt(e.amt*p.b)}</span>`;
@@ -839,11 +927,15 @@ function renderExp(){
     let srcName="";
     if(e.pay){ srcName='💳 '+((db.cards.find(c=>c.id===e.pay)||{}).name||''); }
     else if(e.acc){ srcName=((db.savings.find(s=>s.id===e.acc)||{}).name||''); }
+    const kindChip = e.kind==='variable'
+      ? '<span class="cat-chip" style="background:var(--clay-soft);color:#8a3d1e">Variable</span>'
+      : '<span class="cat-chip" style="background:var(--teal-soft);color:#1e564a">Fijo</span>';
     return `<div class="exp">
       <div class="desc">
         <span class="t">${esc(e.desc)}</span>
         <span class="s">
           <span class="who-tag ${whoTagClass(e.who)}" style="padding:1px 7px"><span class="dot ${whoDot(e.who)}"></span>${whoName(e.who)}</span>
+          ${kindChip}
           <span class="cat-chip">${esc(e.cat)}</span>
           <span>${e.date.slice(8,10)}/${e.date.slice(5,7)}</span>
           ${srcName?'<span>· '+esc(srcName)+'</span>':''}
@@ -859,6 +951,7 @@ function renderExp(){
 /* ---------- render: dashboard ---------- */
 function renderDash(){
   const list=monthExpenses();
+  const incList=monthIncomes();
   const p=pct();
   let totalShared=0, ownA=0, ownB=0;
   list.forEach(e=>{
@@ -867,18 +960,32 @@ function renderDash(){
     else if(e.who==="b") ownB+=e.amt;
   });
   const total=totalShared+ownA+ownB;
-  // what each owes toward shared + their own
   const oweA = totalShared*p.a + ownA;
   const oweB = totalShared*p.b + ownB;
   const totalDebt=db.cards.reduce((s,c)=>s+c.debt,0);
-  const totalSave=db.savings.filter(s=>s.type==='save').reduce((s,x)=>s+accountBalance(x.id),0);
-  const totalIncome=monthIncomes().reduce((s,i)=>s+i.amt,0);
-  const balance=totalIncome-total;
+
+  // --- valores según filtro de persona ---
+  let vIncome, vExpense, vLabel;
+  if(curPerson==="a"){
+    vIncome=incList.filter(i=>i.who==="a").reduce((s,i)=>s+i.amt,0);
+    vExpense=oweA; vLabel="de "+db.people.a.name;
+  } else if(curPerson==="b"){
+    vIncome=incList.filter(i=>i.who==="b").reduce((s,i)=>s+i.amt,0);
+    vExpense=oweB; vLabel="de "+db.people.b.name;
+  } else if(curPerson==="shared"){
+    vIncome=incList.filter(i=>i.who==="shared").reduce((s,i)=>s+i.amt,0);
+    vExpense=totalShared; vLabel="compartidos";
+  } else {
+    vIncome=incList.reduce((s,i)=>s+i.amt,0);
+    vExpense=total; vLabel="del hogar";
+  }
+  const balance=vIncome-vExpense;
+  const incCount=curPerson==="all"?incList.length:incList.filter(i=>i.who===curPerson).length;
 
   document.getElementById('dashStats').innerHTML=`
-    <div class="stat accent"><div class="k">Ingresos del mes</div><div class="v">${fmt(totalIncome)}</div><div class="sub">${monthIncomes().length} ingreso${monthIncomes().length===1?'':'s'}</div></div>
-    <div class="stat"><div class="k">Gasto total del mes</div><div class="v sm">${fmt(total)}</div><div class="sub">${list.length} movimiento${list.length===1?'':'s'}</div></div>
-    <div class="stat"><div class="k">Balance del mes</div><div class="v sm ${balance<0?'':''}" style="color:${balance<0?'var(--warn)':'var(--ok)'}">${balance<0?'−':'+'}${fmt(Math.abs(balance))}</div><div class="sub">ingresos − gastos</div></div>
+    <div class="stat accent"><div class="k">Ingresos ${vLabel}</div><div class="v">${fmt(vIncome)}</div><div class="sub">${incCount} ingreso${incCount===1?'':'s'}</div></div>
+    <div class="stat"><div class="k">Gastos ${vLabel}</div><div class="v sm">${fmt(vExpense)}</div><div class="sub">${curPerson==='all'?list.length+' movimientos':'incluye parte compartida'}</div></div>
+    <div class="stat"><div class="k">Balance del mes</div><div class="v sm" style="color:${balance<0?'var(--warn)':'var(--ok)'}">${balance<0?'−':'+'}${fmt(Math.abs(balance))}</div><div class="sub">ingresos − gastos</div></div>
     <div class="stat"><div class="k">Deuda en tarjetas</div><div class="v sm">${fmt(totalDebt)}</div><div class="sub">${db.cards.length} tarjeta${db.cards.length===1?'':'s'}</div></div>`;
 
   // owe cards
@@ -900,9 +1007,9 @@ function renderDash(){
       </div>
     </div>`;
 
-  // categories
+  // categories (respetan filtro de persona)
   const cats={};
-  list.forEach(e=>{ cats[e.cat]=(cats[e.cat]||0)+e.amt; });
+  list.filter(e=>matchPerson(e.who)).forEach(e=>{ cats[e.cat]=(cats[e.cat]||0)+e.amt; });
   const catArr=Object.entries(cats).sort((a,b)=>b[1]-a[1]);
   const maxCat=catArr.length?catArr[0][1]:1;
   const colors=["--teal","--gold","--plum","--clay","--ok"];
@@ -965,6 +1072,7 @@ function openExp(){
   document.getElementById('expAmt').value='';
   document.getElementById('expDate').value=new Date().toISOString().slice(0,10);
   document.querySelector('input[name=ew][value=shared]').checked=true;
+  document.querySelector('input[name=ek][value=fijo]').checked=true;
   // fuente: efectivo, cuentas (débito) y tarjetas (crédito)
   const accts=(db.savings||[]).filter(s=>s.type==='acct');
   const sel=document.getElementById('expSource');
@@ -1005,6 +1113,7 @@ function saveExp(e){
     desc:document.getElementById('expDesc').value.trim(),
     amt:parseNum(document.getElementById('expAmt').value),
     cat:document.getElementById('expCat').value,
+    kind:document.querySelector('input[name=ek]:checked').value,
     date:document.getElementById('expDate').value,
     pay:null,  // id de tarjeta de crédito (afecta deuda / "Por pagar")
     acc:null   // id de cuenta de débito (baja saldo)
@@ -1133,6 +1242,7 @@ document.getElementById('lockInput').addEventListener('keydown',e=>{ if(e.key===
 function boot(){
   bindCfg();
   attachAllMoneyFields();
+  updatePersonBar();
   renderAll();
   startSync();
 }
