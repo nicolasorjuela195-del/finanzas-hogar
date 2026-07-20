@@ -585,6 +585,14 @@ function save(){
   saveTimer=setTimeout(()=>b.classList.remove('show'),1200);
   if(sbReady && !remoteApplying) pushToCloud();
 }
+/* ¿el estado actual tiene algo que valga la pena guardar? */
+function dbHasData(d){
+  if(!d) return false;
+  const hasPeople = d.people && (d.people.a.income>0 || d.people.b.income>0 ||
+      (d.people.a.name && d.people.a.name!=='Nico') || (d.people.b.name && d.people.b.name!=='Mari'));
+  return hasPeople || (d.cards&&d.cards.length) || (d.savings&&d.savings.length) ||
+         (d.expenses&&d.expenses.length) || (d.incomes&&d.incomes.length);
+}
 /* Guardar en Supabase, evitando pisar escrituras simultáneas */
 async function pushToCloud(){
   if(saving){ saveQueued=true; return; }
@@ -592,8 +600,15 @@ async function pushToCloud(){
   try{
     const { error } = await sb.from('estado').upsert({ id: ROW_ID, data: db, updated_at: new Date().toISOString() });
     if(error) throw error;
+    // Verificar que de verdad quedó guardado leyéndolo de vuelta
+    const { data:check, error:err2 } = await sb.from('estado').select('data').eq('id', ROW_ID).maybeSingle();
+    if(err2) throw err2;
+    if(!check){ setSync('off','No guardó (permisos)'); saving=false; return; }
     setSync('','En línea');
-  }catch(e){ setSync('off','Sin conexión'); }
+  }catch(e){
+    console.error('[Cuentas] Error al guardar en Supabase:', e);
+    setSync('off','Error al guardar');
+  }
   saving=false;
   if(saveQueued){ saveQueued=false; pushToCloud(); }
 }
@@ -604,10 +619,19 @@ async function startSync(){
   try{
     const { data, error } = await sb.from('estado').select('data').eq('id', ROW_ID).maybeSingle();
     if(error) throw error;
-    if(data && data.data && data.data.people){ applyRemote(data.data); }
-    else { await pushToCloud(); } // primera vez: crear la fila con lo que haya
+    if(data && data.data && data.data.people){
+      applyRemote(data.data);
+    } else if(dbHasData(db)){
+      // No hay nada en la nube pero SÍ tengo datos locales: subirlos (primera vez).
+      await pushToCloud();
+    } else {
+      // No hay nada en la nube y tampoco local: no hago nada (evita sobrescribir con vacío).
+    }
     setSync('','En línea');
-  }catch(e){ setSync('off','Sin conexión'); return; }
+  }catch(e){
+    console.error('[Cuentas] Error al conectar con Supabase:', e);
+    setSync('off','Sin conexión'); return;
+  }
 
   // realtime: escuchar cambios en la fila
   sb.channel('estado-live')
@@ -738,21 +762,27 @@ function bindCfg(){
   na.value=db.people.a.name; nb.value=db.people.b.name;
   ia.value=db.people.a.income?formatLiveCO(String(db.people.a.income).replace(".",",")):"";
   ib.value=db.people.b.income?formatLiveCO(String(db.people.b.income).replace(".",",")):"";
+  // refresca los porcentajes en pantalla SIN guardar (para no pisar la nube al arrancar)
+  const refresh=()=>{
+    const p=pct();
+    document.getElementById('pctA').textContent=Math.round(p.a*100)+"%";
+    document.getElementById('pctB').textContent=Math.round(p.b*100)+"%";
+    document.getElementById('incTotal').textContent=fmt(db.people.a.income+db.people.b.income);
+    syncLabels();
+  };
+  // se llama solo cuando el usuario de verdad escribe en los campos: aquí SÍ guarda
   const upd=()=>{
     db.people.a.name=na.value.trim()||"Nico";
     db.people.b.name=nb.value.trim()||"Mari";
     db.people.a.income=parseNum(ia.value);
     db.people.b.income=parseNum(ib.value);
-    const p=pct();
-    document.getElementById('pctA').textContent=Math.round(p.a*100)+"%";
-    document.getElementById('pctB').textContent=Math.round(p.b*100)+"%";
-    document.getElementById('incTotal').textContent=fmt(db.people.a.income+db.people.b.income);
-    save(); syncLabels();
+    refresh();
+    save();
   };
   na.oninput=nb.oninput=upd;
   ia.oninput=()=>{ ia.value=formatLiveCO(ia.value); upd(); };
   ib.oninput=()=>{ ib.value=formatLiveCO(ib.value); upd(); };
-  upd();
+  refresh(); // solo pinta, no guarda
 }
 function syncLabels(){
   const A=db.people.a.name, B=db.people.b.name;
