@@ -71,6 +71,10 @@
   .exp .xedit:hover{color:var(--gold)}
 
   .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:20px}
+  .block-label{font-size:12px;letter-spacing:.13em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;margin:4px 0 12px}
+  .filter-bar{display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center}
+  .filter-bar input,.filter-bar select{padding:8px 11px;border:1px solid var(--line);border-radius:var(--radius-sm);font-size:13.5px;font-family:inherit;background:var(--card);color:var(--ink)}
+  .filter-bar input:focus,.filter-bar select:focus{outline:none;border-color:var(--gold)}
   .stat{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:16px 18px;min-width:0;overflow:hidden}
   .stat .k{font-size:12.5px;color:var(--ink-soft);margin-bottom:7px;font-weight:500}
   .stat .v{font-size:clamp(17px,4.6vw,24px);font-weight:600;letter-spacing:-.02em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -309,6 +313,11 @@
       <h2 class="sec" style="margin:0">Gastos del mes</h2>
       <button class="btn" onclick="openExp()">+ Añadir gasto</button>
     </div>
+    <div class="filter-bar" id="expFilters">
+      <input type="date" id="expFilterDate" onchange="renderExp()" title="Filtrar por día">
+      <select id="expFilterSource" onchange="renderExp()"><option value="">Todas las cuentas/tarjetas</option></select>
+      <button class="btn ghost sm" onclick="clearExpFilters()" id="expFilterClear" style="display:none">Limpiar filtros</button>
+    </div>
     <div id="expWrap"></div>
   </section>
 
@@ -338,7 +347,12 @@
       </div>
     </div>
     <div id="saveTotals"></div>
+    <div class="filter-bar" id="saveFilters">
+      <select id="saveFilterAcc" onchange="renderSave()"><option value="">Ver todas las cuentas</option></select>
+      <button class="btn ghost sm" onclick="document.getElementById('saveFilterAcc').value='';renderSave()" id="saveFilterClear" style="display:none">Ver todas</button>
+    </div>
     <div id="saveWrap"></div>
+    <div id="saveMoves"></div>
   </section>
 
   <!-- ============ CONFIG ============ -->
@@ -1088,8 +1102,22 @@ function renderSaveTotals(){
 function renderSave(){
   renderSaveTotals();
   const w=document.getElementById('saveWrap');
+  const moves=document.getElementById('saveMoves');
+  if(moves) moves.innerHTML='';
   if(!db.savings.length){ w.innerHTML=empty("🏦","Aún no hay cuentas. Añade tus cuentas (Falabella, Global66...) o metas de ahorro."); return; }
-  w.innerHTML='<div class="cards">'+db.savings.map(s=>{
+  // poblar filtro de cuenta
+  const fsel=document.getElementById('saveFilterAcc');
+  if(fsel){
+    const cur=fsel.value;
+    fsel.innerHTML='<option value="">Ver todas las cuentas</option>'+db.savings.map(s=>`<option value="${s.id}">${esc(s.name)}</option>`).join('');
+    fsel.value=cur;
+    const clr=document.getElementById('saveFilterClear'); if(clr) clr.style.display=cur?'inline-flex':'none';
+  }
+  const filterAcc = fsel ? fsel.value : '';
+  const shown = filterAcc ? db.savings.filter(s=>s.id===filterAcc) : db.savings;
+  // si hay una cuenta filtrada, mostrar sus movimientos detallados
+  if(filterAcc){ renderAccountMoves(filterAcc); }
+  w.innerHTML='<div class="cards">'+shown.map(s=>{
     const cur=s.cur||'COP';
     const bal=accountBalance(s.id);
     const goalBar = s.goal>0 ? '<div class="bar"><i style="width:'+Math.min(100,Math.max(0,bal/s.goal*100))+'%"></i></div><div class="split-note">'+Math.round(bal/s.goal*100)+'% de la meta '+fmtCur(s.goal,cur)+'</div>' : '';
@@ -1119,6 +1147,34 @@ function renderSave(){
       ${rows}
     </div>`;
   }).join('')+'</div>';
+}
+
+/* Lista cronológica de todos los movimientos que afectan a una cuenta. */
+function renderAccountMoves(accId){
+  const el=document.getElementById('saveMoves');
+  if(!el) return;
+  const acc=db.savings.find(s=>s.id===accId);
+  if(!acc){ el.innerHTML=''; return; }
+  const cur=acc.cur||'COP';
+  const moves=[];
+  (db.incomes||[]).forEach(i=>{ if(i.acc===accId) moves.push({date:i.date, desc:i.desc||'Ingreso', tag:'Ingreso', amt:i.amt, dir:1}); });
+  (db.expenses||[]).forEach(e=>{ if(e.acc===accId && !e.pay) moves.push({date:e.date, desc:e.desc, tag:'Gasto', amt:e.amt, dir:-1}); });
+  (db.transfers||[]).forEach(t=>{
+    if(t.to===accId) moves.push({date:t.date, desc:t.note||'Transferencia recibida', tag:'Transf. entra', amt:(t.amtDest!==undefined?t.amtDest:t.amt), dir:1});
+    if(t.from===accId) moves.push({date:t.date, desc:t.note||'Transferencia enviada', tag:'Transf. sale', amt:t.amt, dir:-1});
+  });
+  (db.expenses||[]).forEach(e=>{ if(e.pay){ creditFlow(e).forEach(f=>{ if(f.acc===accId) moves.push({date:e.date, desc:e.desc+' (pago tarjeta)', tag:'Pago tarjeta', amt:f.amt, dir:-1}); }); } });
+  moves.sort((a,b)=>b.date.localeCompare(a.date));
+  if(!moves.length){ el.innerHTML='<div class="empty" style="padding:24px"><p>Esta cuenta aún no tiene movimientos.</p></div>'; return; }
+  el.innerHTML=`<h2 class="sec" style="margin-top:8px">Movimientos de ${esc(acc.name)}</h2>
+    <div class="exp-list">`+moves.map(m=>`
+      <div class="exp" style="grid-template-columns:1fr auto">
+        <div class="desc">
+          <span class="t">${esc(m.desc)}</span>
+          <span class="s"><span class="cat-chip">${m.tag}</span><span>${m.date.slice(8,10)}/${m.date.slice(5,7)}/${m.date.slice(0,4)}</span></span>
+        </div>
+        <div class="amt" style="color:${m.dir>0?'var(--ok)':'var(--warn)'}">${m.dir>0?'+':'−'}${fmtCur(m.amt,cur).replace(/^US\$|^\$/,'')}</div>
+      </div>`).join('')+'</div>';
 }
 
 /* ---------- render: incomes ---------- */
@@ -1152,18 +1208,47 @@ function renderInc(){
 }
 
 /* ---------- render: expenses ---------- */
+function populateExpSourceFilter(){
+  const sel=document.getElementById('expFilterSource');
+  if(!sel) return;
+  const cur=sel.value;
+  const accts=(db.savings||[]).filter(s=>s.type==='acct'||s.type==='save');
+  let opts='<option value="">Todas las cuentas/tarjetas</option>';
+  if(accts.length) opts+='<optgroup label="Cuentas">'+accts.map(a=>`<option value="acc:${a.id}">${esc(a.name)}</option>`).join('')+'</optgroup>';
+  if(db.cards.length) opts+='<optgroup label="Tarjetas">'+db.cards.map(c=>`<option value="card:${c.id}">${esc(c.name)}</option>`).join('')+'</optgroup>';
+  sel.innerHTML=opts;
+  sel.value=cur;
+}
+function clearExpFilters(){
+  document.getElementById('expFilterDate').value='';
+  document.getElementById('expFilterSource').value='';
+  renderExp();
+}
 function renderExp(){
   const w=document.getElementById('expWrap');
   const p=pct();
+  populateExpSourceFilter();
   const all=monthExpenses();
-  // qué gastos se muestran según el filtro
+  // qué gastos se muestran según el filtro de persona
   let list;
   const personView = (curPerson==="a"||curPerson==="b");
   if(curPerson==="all"){ list=all.slice(); }
   else if(personView){ list=all.filter(e=>e.who===curPerson || e.who==="shared"); }
   else { list=all.filter(e=>e.who==="shared"); } // compartido
+
+  // filtros adicionales: fecha y fuente (cuenta/tarjeta)
+  const fDate=document.getElementById('expFilterDate') ? document.getElementById('expFilterDate').value : '';
+  const fSrc=document.getElementById('expFilterSource') ? document.getElementById('expFilterSource').value : '';
+  const clearBtn=document.getElementById('expFilterClear');
+  if(clearBtn) clearBtn.style.display=(fDate||fSrc)?'inline-flex':'none';
+  if(fDate) list=list.filter(e=>e.date===fDate);
+  if(fSrc){
+    if(fSrc.startsWith('card:')) list=list.filter(e=>e.pay===fSrc.slice(5));
+    else if(fSrc.startsWith('acc:')) list=list.filter(e=>e.acc===fSrc.slice(4));
+  }
+
   list.sort((a,b)=>b.date.localeCompare(a.date));
-  if(!list.length){ w.innerHTML=empty("🧾","No hay gastos"+personSuffix()+" este mes. Pulsa «Añadir gasto» para empezar."); return; }
+  if(!list.length){ w.innerHTML=empty("🧾",(fDate||fSrc)?"No hay gastos con esos filtros. Prueba a limpiarlos.":"No hay gastos"+personSuffix()+" este mes. Pulsa «Añadir gasto» para empezar."); return; }
 
   // el monto que "pesa" para la persona actual en un gasto dado
   const share = e => {
@@ -1267,17 +1352,40 @@ function renderDash(){
     vIncome=incList.reduce((s,i)=>s+i.amt,0);
     vExpense=total; vCredit=pendA+pendB; vLabel="del hogar";
   }
-  const balAhora = vIncome - (vExpense - vCredit); // resta solo lo que YA salió
-  const balProy  = vIncome - vExpense;             // resta todo lo del mes
+  const balMes = vIncome - vExpense; // balance del flujo del mes (puede ser negativo, es normal)
   const incCount=curPerson==="all"?incList.length:incList.filter(i=>i.who===curPerson).length;
   const col=n=>n<0?'var(--warn)':'var(--ok)';
 
+  // --- DINERO ACUMULADO (no depende del mes) ---
+  // saldos reales de cuentas/ahorros que pertenecen a la persona filtrada
+  const belongsTo = s => {
+    if(curPerson==="all") return true;
+    if(curPerson==="a") return s.who==="a" || s.who==="shared";
+    if(curPerson==="b") return s.who==="b" || s.who==="shared";
+    if(curPerson==="shared") return s.who==="shared";
+    return true;
+  };
+  const cuentasCOP=(db.savings||[]).filter(s=>s.type==='acct' && (s.cur||'COP')==='COP' && belongsTo(s)).reduce((a,s)=>a+accountBalance(s.id),0);
+  const ahorrosCOP=(db.savings||[]).filter(s=>s.type==='save' && (s.cur||'COP')==='COP' && belongsTo(s)).reduce((a,s)=>a+accountBalance(s.id),0);
+  const totalUSD=(db.savings||[]).filter(s=>(s.cur||'COP')==='USD' && belongsTo(s)).reduce((a,s)=>a+accountBalance(s.id),0);
+  const hayUSD=(db.savings||[]).some(s=>(s.cur||'COP')==='USD' && belongsTo(s));
+
+  const dineroHoy = `
+    <div class="stat accent"><div class="k">En cuentas${curPerson!=='all'?' ('+ (curPerson==='shared'?'compartidas':whoName(curPerson)) +')':''}</div><div class="v">${fmtK(cuentasCOP)}</div><div class="sub">saldo disponible hoy</div></div>
+    <div class="stat"><div class="k">En ahorros</div><div class="v sm">${fmtK(ahorrosCOP)}</div><div class="sub">metas y fondos</div></div>
+    ${hayUSD?`<div class="stat" style="background:#eef5f2;border-color:#cfe4dc"><div class="k">En dólares</div><div class="v sm" style="color:var(--teal)">${fmtCur(totalUSD,'USD')}</div><div class="sub">cuenta(s) USD</div></div>`:''}
+    <div class="stat"><div class="k">Deuda en tarjetas</div><div class="v sm" style="color:${totalDebt>0?'var(--warn)':'var(--ink)'}">${fmtK(totalDebt)}</div><div class="sub">sin pagar aún</div></div>`;
+
+  const esteMes = `
+    <div class="stat"><div class="k">Ingresos ${vLabel}</div><div class="v sm">${fmtK(vIncome)}</div><div class="sub">${incCount} ingreso${incCount===1?'':'s'}</div></div>
+    <div class="stat"><div class="k">Gastos ${vLabel}</div><div class="v sm">${fmtK(vExpense)}</div><div class="sub">${curPerson==='all'?list.length+' movimientos':'incluye compartido'}</div></div>
+    <div class="stat"><div class="k">Balance del mes</div><div class="v sm" style="color:${col(balMes)}">${balMes<0?'−':'+'}${fmtK(Math.abs(balMes)).slice(1)}</div><div class="sub">ingresos − gastos</div></div>`;
+
   document.getElementById('dashStats').innerHTML=`
-    <div class="stat accent"><div class="k">Ingresos ${vLabel}</div><div class="v">${fmtK(vIncome)}</div><div class="sub">${incCount} ingreso${incCount===1?'':'s'}</div></div>
-    <div class="stat"><div class="k">Gastos ${vLabel}</div><div class="v sm">${fmtK(vExpense)}</div><div class="sub">${curPerson==='all'?list.length+' movimientos':'incluye parte compartida'}</div></div>
-    <div class="stat"><div class="k">Disponible ahora</div><div class="v sm" style="color:${col(balAhora)}">${balAhora<0?'−':'+'}${fmtK(Math.abs(balAhora)).slice(1)}</div><div class="sub">sin restar lo de crédito</div></div>
-    <div class="stat"><div class="k">Proyectado</div><div class="v sm" style="color:${col(balProy)}">${balProy<0?'−':'+'}${fmtK(Math.abs(balProy)).slice(1)}</div><div class="sub">ya restando tarjetas</div></div>
-    <div class="stat"><div class="k">Deuda en tarjetas</div><div class="v sm">${fmtK(totalDebt)}</div><div class="sub">${db.cards.length} tarjeta${db.cards.length===1?'':'s'}</div></div>`;
+    <div class="block-label">Tu dinero hoy</div>
+    <div class="stat-row">${dineroHoy}</div>
+    <div class="block-label">Este mes · <span style="text-transform:capitalize">${monthLabel(curMonth)}</span></div>
+    <div class="stat-row">${esteMes}</div>`;
 
   // owe cards
   document.getElementById('oweCards').innerHTML=`
