@@ -395,6 +395,18 @@
         <div class="p"><div class="k">Ingreso total del hogar</div><div class="v" id="incTotal">$0</div></div>
       </div>
     </div>
+
+    <h2 class="sec" style="margin-top:34px">Calculadora: ¿quién le debe a quién?</h2>
+    <p class="hint" style="margin-bottom:16px;max-width:600px">Para cuando pagan cosas de su bolsillo y luego se reembolsan. Anota cada gasto y quién lo pagó; la calculadora reparte según la proporción (61/39) y te dice quién debe a quién. Esto no afecta tus cuentas ni gastos: es solo un ajuste entre ustedes.</p>
+    <div class="prop-box" style="max-width:720px">
+      <div id="calcRows"></div>
+      <button class="btn ghost sm" onclick="addCalcRow()" style="margin-top:10px">+ Añadir gasto</button>
+      <div id="calcResult" style="margin-top:20px"></div>
+      <div style="margin-top:14px;display:flex;gap:8px">
+        <button class="btn sm" onclick="calcCompute()">Calcular</button>
+        <button class="btn ghost sm" onclick="calcClear()">Limpiar todo</button>
+      </div>
+    </div>
   </section>
 
 </main>
@@ -601,12 +613,13 @@ let db = blankDB();
 function blankDB(){
   return {
     people:{a:{name:"Nico",income:0}, b:{name:"Mari",income:0}},
-    cards:[], savings:[], expenses:[], incomes:[], transfers:[], payments:[]
+    cards:[], savings:[], expenses:[], incomes:[], transfers:[], payments:[], settle:[]
   };
 }
 function normalizeDB(){
   if(!db.cards)db.cards=[]; if(!db.savings)db.savings=[]; if(!db.expenses)db.expenses=[];
   if(!db.incomes)db.incomes=[]; if(!db.transfers)db.transfers=[]; if(!db.payments)db.payments=[];
+  if(!db.settle)db.settle=[];
   migrateAccounts();
 }
 /* Migra cuentas viejas: el antiguo 'bal' (saldo actual) pasa a 'bal0' (saldo inicial).
@@ -768,7 +781,7 @@ function applyRemote(nd){
   remoteApplying=true;
   db=nd;
   normalizeDB();
-  bindCfg(); renderAll();
+  bindCfg(); renderCalcRows(); calcCompute(); renderAll();
   remoteApplying=false;
 }
 
@@ -897,6 +910,71 @@ document.getElementById('mPrev').onclick=()=>{curMonth.setMonth(curMonth.getMont
 document.getElementById('mNext').onclick=()=>{curMonth.setMonth(curMonth.getMonth()+1);renderAll();};
 
 /* ---------- config / proportion ---------- */
+/* ---------- calculadora: quién le debe a quién ---------- */
+function renderCalcRows(){
+  const c=document.getElementById('calcRows');
+  if(!c) return;
+  if(!db.settle || !db.settle.length){
+    c.innerHTML='<p class="hint">Aún no hay gastos. Pulsa «Añadir gasto» para empezar.</p>';
+    return;
+  }
+  c.innerHTML=db.settle.map((r,i)=>`
+    <div style="display:grid;grid-template-columns:1fr 110px 130px 30px;gap:8px;align-items:center;margin-bottom:8px">
+      <input type="text" value="${esc(r.concept||'')}" placeholder="Concepto" onchange="calcEdit(${i},'concept',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-family:inherit;font-size:13.5px;background:var(--paper)">
+      <select onchange="calcEdit(${i},'who',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-family:inherit;font-size:13.5px;background:var(--paper)">
+        <option value="a"${r.who==='a'?' selected':''}>${esc(db.people.a.name)}</option>
+        <option value="b"${r.who==='b'?' selected':''}>${esc(db.people.b.name)}</option>
+      </select>
+      <input type="text" inputmode="decimal" value="${r.amt?formatLiveCO(String(r.amt).replace('.',',')):''}" placeholder="Valor" oninput="this.value=formatLiveCO(this.value)" onchange="calcEdit(${i},'amt',parseNum(this.value))" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-family:inherit;font-size:13.5px;background:var(--paper);text-align:right">
+      <button onclick="calcDel(${i})" style="background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:16px">×</button>
+    </div>`).join('');
+}
+function addCalcRow(){
+  if(!db.settle) db.settle=[];
+  db.settle.push({concept:'', who:'a', amt:0});
+  save(); renderCalcRows();
+}
+function calcEdit(i, field, val){
+  if(db.settle[i]){ db.settle[i][field]=val; save(); if(field==='amt') calcCompute(); }
+}
+function calcDel(i){
+  db.settle.splice(i,1); save(); renderCalcRows(); calcCompute();
+}
+function calcClear(){
+  db.settle=[]; save(); renderCalcRows();
+  document.getElementById('calcResult').innerHTML='';
+}
+function calcCompute(){
+  const el=document.getElementById('calcResult');
+  if(!el) return;
+  const rows=(db.settle||[]).filter(r=>r.amt>0);
+  if(!rows.length){ el.innerHTML=''; return; }
+  const p=pct();
+  let pagoA=0, pagoB=0;
+  rows.forEach(r=>{ if(r.who==='a') pagoA+=r.amt; else pagoB+=r.amt; });
+  const total=pagoA+pagoB;
+  const tocaA=total*p.a, tocaB=total*p.b;
+  // saldo de cada uno = lo que pagó - lo que le tocaba. Positivo = le deben; negativo = debe.
+  const saldoA=pagoA-tocaA;
+  const saldoB=pagoB-tocaB;
+  const nA=db.people.a.name, nB=db.people.b.name;
+  let veredicto;
+  if(Math.abs(saldoA)<1){ veredicto=`<div style="text-align:center;font-weight:600;color:var(--ok)">Están a mano ✓</div>`; }
+  else if(saldoA>0){ veredicto=`<div style="text-align:center;font-size:15px"><b>${esc(nB)}</b> le debe <b style="color:var(--ok)">${fmt(saldoA)}</b> a <b>${esc(nA)}</b></div>`; }
+  else { veredicto=`<div style="text-align:center;font-size:15px"><b>${esc(nA)}</b> le debe <b style="color:var(--ok)">${fmt(Math.abs(saldoA))}</b> a <b>${esc(nB)}</b></div>`; }
+  el.innerHTML=`
+    <div style="border-top:1px solid var(--line);padding-top:16px">
+      <div class="rows">
+        <div class="r"><span class="lab">Total pagado entre ambos</span><span class="val">${fmt(total)}</span></div>
+        <div class="r"><span class="lab">${esc(nA)} pagó</span><span class="val">${fmt(pagoA)}</span></div>
+        <div class="r"><span class="lab">${esc(nB)} pagó</span><span class="val">${fmt(pagoB)}</span></div>
+        <div class="r"><span class="lab">Le tocaba a ${esc(nA)} (${Math.round(p.a*100)}%)</span><span class="val">${fmt(tocaA)}</span></div>
+        <div class="r"><span class="lab">Le tocaba a ${esc(nB)} (${Math.round(p.b*100)}%)</span><span class="val">${fmt(tocaB)}</span></div>
+      </div>
+      <div style="margin-top:14px;padding:14px;background:var(--paper);border-radius:10px">${veredicto}</div>
+    </div>`;
+}
+
 function bindCfg(){
   const na=document.getElementById('nameA'), nb=document.getElementById('nameB');
   const ia=document.getElementById('incA'), ib=document.getElementById('incB');
@@ -1374,15 +1452,30 @@ function renderDash(){
     if(curPerson==="shared") return s.who==="shared";
     return true;
   };
+  // para ahorros: en vista de persona solo cuentan los 100% propios (los compartidos no)
+  const savingBelongs = s => {
+    if(curPerson==="all") return true;
+    if(curPerson==="shared") return s.who==="shared";
+    return s.who===curPerson; // solo propios, sin compartidos
+  };
   const cuentasCOP=(db.savings||[]).filter(s=>s.type==='acct' && (s.cur||'COP')==='COP' && belongsTo(s)).reduce((a,s)=>a+accountBalance(s.id),0);
-  const ahorrosCOP=(db.savings||[]).filter(s=>s.type==='save' && (s.cur||'COP')==='COP' && belongsTo(s)).reduce((a,s)=>a+accountBalance(s.id),0);
+  const ahorrosCOP=(db.savings||[]).filter(s=>s.type==='save' && (s.cur||'COP')==='COP' && savingBelongs(s)).reduce((a,s)=>a+accountBalance(s.id),0);
   const totalUSD=(db.savings||[]).filter(s=>(s.cur||'COP')==='USD' && belongsTo(s)).reduce((a,s)=>a+accountBalance(s.id),0);
   const hayUSD=(db.savings||[]).some(s=>(s.cur||'COP')==='USD' && belongsTo(s));
 
+  // dólares también solo los que pertenecen 100% (propios) en vista de persona
+  const usdBelongs = s => {
+    if(curPerson==="all") return true;
+    if(curPerson==="shared") return s.who==="shared";
+    return s.who===curPerson;
+  };
+  const totalUSDp=(db.savings||[]).filter(s=>(s.cur||'COP')==='USD' && usdBelongs(s)).reduce((a,s)=>a+accountBalance(s.id),0);
+  const hayUSDp=(db.savings||[]).some(s=>(s.cur||'COP')==='USD' && usdBelongs(s));
+
   const dineroHoy = `
     <div class="stat accent"><div class="k">En cuentas${curPerson!=='all'?' ('+ (curPerson==='shared'?'compartidas':whoName(curPerson)) +')':''}</div><div class="v">${fmtK(cuentasCOP)}</div><div class="sub">saldo disponible hoy</div></div>
-    <div class="stat"><div class="k">En ahorros</div><div class="v sm">${fmtK(ahorrosCOP)}</div><div class="sub">metas y fondos</div></div>
-    ${hayUSD?`<div class="stat" style="background:#eef5f2;border-color:#cfe4dc"><div class="k">En dólares</div><div class="v sm" style="color:var(--teal)">${fmtCur(totalUSD,'USD')}</div><div class="sub">cuenta(s) USD</div></div>`:''}
+    <div class="stat"><div class="k">En ahorros</div><div class="v sm">${fmtK(ahorrosCOP)}</div><div class="sub">${curPerson==='all'?'metas y fondos':(curPerson==='shared'?'fondos compartidos':'solo tus ahorros propios')}</div></div>
+    ${hayUSDp?`<div class="stat" style="background:#eef5f2;border-color:#cfe4dc"><div class="k">En dólares</div><div class="v sm" style="color:var(--teal)">${fmtCur(totalUSDp,'USD')}</div><div class="sub">cuenta(s) USD</div></div>`:''}
     <div class="stat"><div class="k">Deuda en tarjetas</div><div class="v sm" style="color:${totalDebt>0?'var(--warn)':'var(--ink)'}">${fmtK(totalDebt)}</div><div class="sub">sin pagar aún</div></div>`;
 
   const esteMes = `
@@ -1789,6 +1882,7 @@ function boot(){
   bindCfg();
   attachAllMoneyFields();
   updatePersonBar();
+  renderCalcRows(); calcCompute();
   renderAll();
   startSync();
 }
