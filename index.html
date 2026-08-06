@@ -350,7 +350,8 @@
   <section class="view" id="v-save">
     <div class="add-bar">
       <h2 class="sec" style="margin:0">Cuentas y ahorros</h2>
-      <div style="display:flex;gap:8px">
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn ghost" onclick="openYield()">✦ Rendimiento</button>
         <button class="btn ghost" onclick="openTransfer()">⇄ Transferir</button>
         <button class="btn" onclick="openSave()">+ Añadir cuenta</button>
       </div>
@@ -578,6 +579,21 @@
       <button type="submit" class="btn" style="justify-content:center;margin-top:4px">Confirmar pago</button>
     </form>
   </div>
+
+  <!-- yield (rendimiento) modal -->
+  <div class="modal" id="mYield" style="display:none">
+    <div class="mh"><h3>Añadir rendimiento</h3><button class="x" onclick="closeModal()">×</button></div>
+    <form onsubmit="saveYield(event)">
+      <div class="fld"><label>¿A qué cuenta entró el rendimiento?</label><select id="yAcc"></select></div>
+      <div class="fld-row">
+        <div class="fld"><label>Monto</label><input type="text" id="yAmt" inputmode="decimal" required placeholder="0"></div>
+        <div class="fld"><label>Fecha</label><input type="date" id="yDate" required></div>
+      </div>
+      <div class="fld"><label>Nota (opcional)</label><input type="text" id="yNote" placeholder="Ej: rendimientos de julio"></div>
+      <p class="hint">Los rendimientos suben el saldo de la cuenta pero no cuentan como ingreso tuyo ni de Mari, así que no afectan el reparto proporcional.</p>
+      <button type="submit" class="btn" style="justify-content:center;margin-top:4px">Guardar rendimiento</button>
+    </form>
+  </div>
 </div>
 
 <!-- ===== Supabase ===== -->
@@ -613,13 +629,13 @@ let db = blankDB();
 function blankDB(){
   return {
     people:{a:{name:"Nico",income:0}, b:{name:"Mari",income:0}},
-    cards:[], savings:[], expenses:[], incomes:[], transfers:[], payments:[], settle:[]
+    cards:[], savings:[], expenses:[], incomes:[], transfers:[], payments:[], settle:[], yields:[]
   };
 }
 function normalizeDB(){
   if(!db.cards)db.cards=[]; if(!db.savings)db.savings=[]; if(!db.expenses)db.expenses=[];
   if(!db.incomes)db.incomes=[]; if(!db.transfers)db.transfers=[]; if(!db.payments)db.payments=[];
-  if(!db.settle)db.settle=[];
+  if(!db.settle)db.settle=[]; if(!db.yields)db.yields=[];
   migrateAccounts();
 }
 /* Migra cuentas viejas: el antiguo 'bal' (saldo actual) pasa a 'bal0' (saldo inicial).
@@ -641,6 +657,7 @@ function accountBalance(accId){
   if(!acc) return 0;
   let bal=acc.bal0||0;
   (db.incomes||[]).forEach(i=>{ if(i.acc===accId) bal+=i.amt; });
+  (db.yields||[]).forEach(y=>{ if(y.acc===accId) bal+=y.amt; });  // rendimientos generados
   (db.expenses||[]).forEach(e=>{ if(e.acc===accId && !e.pay) bal-=e.amt; });
   (db.transfers||[]).forEach(t=>{
     if(t.to===accId) bal += (t.amtDest!==undefined ? t.amtDest : t.amt);  // entra (en moneda destino)
@@ -1209,14 +1226,16 @@ function renderSave(){
     const bal=accountBalance(s.id);
     const goalBar = s.goal>0 ? '<div class="bar"><i style="width:'+Math.min(100,Math.max(0,bal/s.goal*100))+'%"></i></div><div class="split-note">'+Math.round(bal/s.goal*100)+'% de la meta '+fmtCur(s.goal,cur)+'</div>' : '';
     // desglose de movimientos de la cuenta
-    let ingresos=0, gastos=0, transIn=0, transOut=0, pagos=0;
+    let ingresos=0, gastos=0, transIn=0, transOut=0, pagos=0, rend=0;
     (db.incomes||[]).forEach(i=>{ if(i.acc===s.id) ingresos+=i.amt; });
+    (db.yields||[]).forEach(y=>{ if(y.acc===s.id) rend+=y.amt; });
     (db.expenses||[]).forEach(e=>{ if(e.acc===s.id && !e.pay) gastos+=e.amt; });
     (db.transfers||[]).forEach(t=>{ if(t.to===s.id) transIn+=(t.amtDest!==undefined?t.amtDest:t.amt); if(t.from===s.id) transOut+=t.amt; });
     (db.expenses||[]).forEach(e=>{ if(e.pay){ creditFlow(e).forEach(f=>{ if(f.acc===s.id) pagos+=f.amt; }); } });
-    const rows = (ingresos||gastos||transIn||transOut||pagos) ? `<div class="rows">
+    const rows = (ingresos||gastos||transIn||transOut||pagos||rend) ? `<div class="rows">
         <div class="r"><span class="lab">Saldo inicial</span><span class="val">${fmtCur(s.bal0||0,cur)}</span></div>
         ${ingresos?`<div class="r"><span class="lab">+ Ingresos</span><span class="val ok">${fmtCur(ingresos,cur)}</span></div>`:''}
+        ${rend?`<div class="r"><span class="lab">+ Rendimientos</span><span class="val ok">${fmtCur(rend,cur)}</span></div>`:''}
         ${transIn?`<div class="r"><span class="lab">+ Transferencias recibidas</span><span class="val ok">${fmtCur(transIn,cur)}</span></div>`:''}
         ${gastos?`<div class="r"><span class="lab">− Gastos débito</span><span class="val warn">${fmtCur(gastos,cur)}</span></div>`:''}
         ${pagos?`<div class="r"><span class="lab">− Pagos de tarjeta</span><span class="val warn">${fmtCur(pagos,cur)}</span></div>`:''}
@@ -1245,6 +1264,7 @@ function renderAccountMoves(accId){
   const cur=acc.cur||'COP';
   const moves=[];
   (db.incomes||[]).forEach(i=>{ if(i.acc===accId) moves.push({date:i.date, desc:i.desc||'Ingreso', tag:'Ingreso', amt:i.amt, dir:1}); });
+  (db.yields||[]).forEach(y=>{ if(y.acc===accId) moves.push({date:y.date, desc:y.note||'Rendimientos', tag:'Rendimiento', amt:y.amt, dir:1}); });
   (db.expenses||[]).forEach(e=>{ if(e.acc===accId && !e.pay) moves.push({date:e.date, desc:e.desc, tag:'Gasto', amt:e.amt, dir:-1}); });
   (db.transfers||[]).forEach(t=>{
     if(t.to===accId) moves.push({date:t.date, desc:t.note||'Transferencia recibida', tag:'Transf. entra', amt:(t.amtDest!==undefined?t.amtDest:t.amt), dir:1});
@@ -1572,7 +1592,7 @@ function setModalTitle(modalId, txt){
 }
 function showModal(id){
   document.getElementById('scrim').classList.add('on');
-  ['mExp','mCard','mSave','mInc','mTransfer','mPayCard'].forEach(m=>document.getElementById(m).style.display='none');
+  ['mExp','mCard','mSave','mInc','mTransfer','mPayCard','mYield'].forEach(m=>document.getElementById(m).style.display='none');
   document.getElementById(id).style.display='block';
 }
 function closeModal(){ document.getElementById('scrim').classList.remove('on'); editing=null; }
@@ -1807,6 +1827,31 @@ function saveTransfer(e){
     id:uid(), from, to, amt, amtDest,
     date:document.getElementById('tDate').value,
     note:document.getElementById('tNote').value.trim()
+  });
+  save(); closeModal(); renderAll();
+}
+
+/* ---------- rendimientos ---------- */
+function openYield(){
+  const accts=(db.savings||[]).filter(s=>s.type==='acct'||s.type==='save');
+  if(!accts.length){ alert('Primero crea una cuenta para registrar sus rendimientos.'); return; }
+  document.getElementById('yAcc').innerHTML=accts.map(a=>`<option value="${a.id}">${esc(a.name)} (${fmtCur(accountBalance(a.id), a.cur||'COP')})</option>`).join('');
+  document.getElementById('yAmt').value='';
+  document.getElementById('yNote').value='';
+  document.getElementById('yDate').value=new Date().toISOString().slice(0,10);
+  attachThousands(document.getElementById('yAmt'));
+  showModal('mYield');
+}
+function saveYield(e){
+  e.preventDefault();
+  const amt=parseNum(document.getElementById('yAmt').value);
+  if(amt<=0){ alert('Escribe un monto válido.'); return; }
+  db.yields.push({
+    id:uid(),
+    acc:document.getElementById('yAcc').value,
+    amt,
+    date:document.getElementById('yDate').value,
+    note:document.getElementById('yNote').value.trim()
   });
   save(); closeModal(); renderAll();
 }
