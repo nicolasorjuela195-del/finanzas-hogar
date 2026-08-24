@@ -595,9 +595,16 @@
     <div class="mh"><h3>Marcar pago de tarjeta</h3><button class="x" onclick="closeModal()">×</button></div>
     <form onsubmit="savePayCard(event)">
       <p class="hint" id="payCardInfo" style="margin-bottom:4px"></p>
+      <div class="fld" id="payWholeFld" style="display:none">
+        <label style="display:flex;align-items:center;gap:8px;cursor:pointer">
+          <input type="checkbox" id="payWhole" onchange="updatePayWholeHint()" style="width:auto">
+          <span id="payWholeLabel">Pagué yo la tarjeta completa (incluida la otra parte)</span>
+        </label>
+        <p class="hint" id="payWholeHint" style="margin-top:4px"></p>
+      </div>
       <div class="fld"><label>¿De qué cuenta sale el pago?</label><select id="payAcc"></select></div>
       <div class="fld"><label>Fecha del pago</label><input type="date" id="payDate" required></div>
-      <p class="hint">Al marcarlo, esta parte se descuenta de la cuenta que elijas y de tu saldo disponible de inmediato.</p>
+      <p class="hint">Al marcarlo, este pago se descuenta de la cuenta que elijas y queda como movimiento rastreable.</p>
       <button type="submit" class="btn" style="justify-content:center;margin-top:4px">Confirmar pago</button>
     </form>
   </div>
@@ -694,28 +701,22 @@ function accountBalance(accId){
   });
   return bal;
 }
-/* Para un gasto a crédito, determina qué parte ya "salió del bolsillo" y de qué cuenta.
-   Devuelve lista de {who, amt, acc}. Una parte sale si:
-   - fue chuleada como pagada (payments), o
-   - ya pasó la fecha de pago del ciclo (se asume pagada desde la cuenta por defecto). */
+/* Para un gasto a crédito, determina qué parte ya salió del bolsillo y de qué cuenta.
+   SOLO cuenta las partes que fueron marcadas como pagadas (nada automático por vencer).
+   Devuelve lista de {who, payer, amt, acc}. */
 function creditFlow(e){
   const card=db.cards.find(c=>c.id===e.pay);
   if(!card) return [];
   const cyc=cycleFor(e.date, card);
   const p=pct();
-  const today=new Date(); today.setHours(0,0,0,0);
-  const vencido = cyc.due < today;
-  // partes según de quién es el gasto
   let parts;
   if(e.who==="shared") parts=[{who:"a",amt:e.amt*p.a},{who:"b",amt:e.amt*p.b}];
   else parts=[{who:e.who,amt:e.amt}];
   const out=[];
   parts.forEach(part=>{
     const pay=findPayment(card.id, cyc.dueKey, part.who);
-    if(pay){ // chuleado: salió de la cuenta elegida
-      out.push({who:part.who, amt:part.amt, acc:pay.acc});
-    } else if(vencido){ // no chuleado pero ya venció: salió de la cuenta por defecto de esa persona
-      out.push({who:part.who, amt:part.amt, acc:defaultAccountFor(part.who)});
+    if(pay){ // solo si está marcado como pagado
+      out.push({who:part.who, payer:pay.payer||part.who, amt:part.amt, acc:pay.acc});
     }
   });
   return out;
@@ -723,7 +724,7 @@ function creditFlow(e){
 function findPayment(cardId, dueKey, who){
   return (db.payments||[]).find(x=>x.card===cardId && x.dueKey===dueKey && x.who===who);
 }
-/* Cuenta por defecto de una persona: la primera cuenta (type acct) suya o compartida. */
+/* Cuenta por defecto de una persona: la primera cuenta suya o compartida (solo para preseleccionar). */
 function defaultAccountFor(who){
   const accts=(db.savings||[]).filter(s=>s.type==='acct');
   const mine=accts.find(s=>s.who===who);
@@ -1129,13 +1130,12 @@ function renderTopay(){
       const personRow=(who, amt)=>{
         if(amt<=0.5) return '';
         const paid=findPayment(c.id, g.dueKey, who);
-        const autoPaid = !paid && past; // venció sin chulear: se asume pagado
         let statusHtml;
         if(paid){
-          statusHtml=`<span class="pill-days" style="background:var(--teal-soft);color:#1e564a">✓ Pagó ${paid.date.slice(8,10)}/${paid.date.slice(5,7)}</span>
+          const coveredByOther = paid.payer && paid.payer!==who;
+          const cover = coveredByOther ? ` <span style="font-size:11px;color:var(--ink-faint)">(pagó ${whoName(paid.payer)})</span>` : '';
+          statusHtml=`<span class="pill-days" style="background:var(--teal-soft);color:#1e564a">✓ Pagado ${paid.date.slice(8,10)}/${paid.date.slice(5,7)}</span>${cover}
             <button class="btn ghost sm" style="margin-left:6px" onclick="unpayCard('${c.id}','${g.dueKey}','${who}')">Deshacer</button>`;
-        } else if(autoPaid){
-          statusHtml=`<span class="pill-days">Descontado (venció)</span>`;
         } else {
           statusHtml=`<button class="btn sm" onclick="openPayCard('${c.id}','${g.dueKey}','${who}',${amt})">Marcar pagado</button>`;
         }
@@ -1292,7 +1292,7 @@ function renderAccountMoves(accId){
     if(t.to===accId) moves.push({date:t.date, desc:t.note||'Transferencia recibida', tag:'Transf. entra', amt:(t.amtDest!==undefined?t.amtDest:t.amt), dir:1});
     if(t.from===accId) moves.push({date:t.date, desc:t.note||'Transferencia enviada', tag:'Transf. sale', amt:t.amt, dir:-1});
   });
-  (db.expenses||[]).forEach(e=>{ if(e.pay){ creditFlow(e).forEach(f=>{ if(f.acc===accId) moves.push({date:e.date, desc:e.desc+' (pago tarjeta)', tag:'Pago tarjeta', amt:f.amt, dir:-1}); }); } });
+  (db.expenses||[]).forEach(e=>{ if(e.pay){ creditFlow(e).forEach(f=>{ if(f.acc===accId){ const pay=findPayment(e.pay, cycleFor(e.date, db.cards.find(c=>c.id===e.pay)).dueKey, f.who); const pdate=pay?pay.date:e.date; const payerNote=(f.payer&&f.payer!==f.who)?' · por '+whoName(f.payer):''; moves.push({date:pdate, desc:e.desc+' (pago '+(db.cards.find(c=>c.id===e.pay)||{}).name+payerNote+')', tag:'Pago tarjeta', amt:f.amt, dir:-1}); } }); } });
   moves.sort((a,b)=>b.date.localeCompare(a.date));
   if(!moves.length){ el.innerHTML='<div class="empty" style="padding:24px"><p>Esta cuenta aún no tiene movimientos.</p></div>'; return; }
   el.innerHTML=`<h2 class="sec" style="margin-top:8px">Movimientos de ${esc(acc.name)}</h2>
@@ -1940,33 +1940,91 @@ function saveYield(e){
 }
 
 /* ---------- pagos de tarjeta (chuleo por persona/ciclo) ---------- */
-let payingContext=null; // {card, dueKey, who, amt}
+let payingContext=null; // {card, dueKey, who, amt, otherWho, otherAmt}
 function openPayCard(cardId, dueKey, who, amt){
   const card=db.cards.find(c=>c.id===cardId);
-  payingContext={card:cardId, dueKey, who, amt};
   const accts=(db.savings||[]).filter(s=>s.type==='acct');
   if(!accts.length){ alert('Primero crea una cuenta de donde salga el pago.'); return; }
+  // ¿existe una parte de la otra persona en este mismo ciclo, aún sin pagar?
+  const other = who==='a'?'b':'a';
+  const otherAmt = cyclePartFor(cardId, dueKey, other);
+  const otherPaid = findPayment(cardId, dueKey, other);
+  payingContext={card:cardId, dueKey, who, amt, otherWho:other, otherAmt:(otherPaid?0:otherAmt)};
+
   document.getElementById('payAcc').innerHTML=accts.map(a=>`<option value="${a.id}">${esc(a.name)} (${fmt(accountBalance(a.id))})</option>`).join('');
-  // preseleccionar la cuenta por defecto de esa persona
   const def=defaultAccountFor(who); if(def) document.getElementById('payAcc').value=def;
   document.getElementById('payDate').value=new Date().toISOString().slice(0,10);
   document.getElementById('payCardInfo').textContent=`Vas a marcar como pagada la parte de ${whoName(who)} (${fmt(amt)}) de ${card.name}.`;
+  // mostrar opción "pagué todo" solo si hay parte de la otra persona pendiente
+  const whole=document.getElementById('payWholeFld');
+  const chk=document.getElementById('payWhole');
+  chk.checked=false;
+  if(payingContext.otherAmt>0.5){
+    whole.style.display='block';
+    document.getElementById('payWholeLabel').textContent=`También pagué la parte de ${whoName(other)} (${fmt(payingContext.otherAmt)})`;
+    updatePayWholeHint();
+  } else {
+    whole.style.display='none';
+  }
   showModal('mPayCard');
+}
+function updatePayWholeHint(){
+  const chk=document.getElementById('payWhole');
+  const h=document.getElementById('payWholeHint');
+  if(!payingContext) return;
+  const other=payingContext.otherWho;
+  if(chk.checked){
+    h.innerHTML=`Se descontará el total de tu cuenta y <b>${whoName(other)} te quedará debiendo ${fmt(payingContext.otherAmt)}</b> (se registra en la calculadora de deudas).`;
+  } else {
+    h.textContent=`Solo se descuenta tu parte. La de ${whoName(other)} queda pendiente.`;
+  }
+}
+/* cuánto le corresponde a 'who' en un ciclo (dueKey) de una tarjeta */
+function cyclePartFor(cardId, dueKey, who){
+  const card=db.cards.find(c=>c.id===cardId);
+  if(!card) return 0;
+  const p=pct();
+  let amt=0;
+  (db.expenses||[]).forEach(e=>{
+    if(e.pay===cardId){
+      const cyc=cycleFor(e.date, card);
+      if(cyc.dueKey===dueKey){
+        if(e.who===who) amt+=e.amt;
+        else if(e.who==='shared') amt+=e.amt*(who==='a'?p.a:p.b);
+      }
+    }
+  });
+  return amt;
 }
 function savePayCard(e){
   e.preventDefault();
   if(!payingContext) return;
+  const acc=document.getElementById('payAcc').value;
+  const date=document.getElementById('payDate').value;
+  const payWhole=document.getElementById('payWhole').checked && payingContext.otherAmt>0.5;
+  // mi parte
   db.payments.push({
-    id:uid(),
-    card:payingContext.card,
-    dueKey:payingContext.dueKey,
-    who:payingContext.who,
-    amt:payingContext.amt,
-    acc:document.getElementById('payAcc').value,
-    date:document.getElementById('payDate').value
+    id:uid(), card:payingContext.card, dueKey:payingContext.dueKey,
+    who:payingContext.who, payer:payingContext.who, amt:payingContext.amt, acc, date
   });
+  // si pagué también la parte del otro
+  if(payWhole){
+    db.payments.push({
+      id:uid(), card:payingContext.card, dueKey:payingContext.dueKey,
+      who:payingContext.otherWho, payer:payingContext.who, amt:payingContext.otherAmt, acc, date
+    });
+    // registrar la deuda en la calculadora: el otro me debe su parte
+    const cardName=(db.cards.find(c=>c.id===payingContext.card)||{}).name||'tarjeta';
+    if(!db.settle) db.settle=[];
+    db.settle.push({
+      concept:`Pago ${cardName} (parte de ${whoName(payingContext.otherWho)})`,
+      who:payingContext.who,          // yo pagué
+      amt:payingContext.otherAmt,     // la parte del otro
+      auto:true
+    });
+  }
   payingContext=null;
-  save(); closeModal(); renderAll();
+  save(); closeModal(); renderCalcRows(); calcCompute(); renderAll();
 }
 function unpayCard(cardId, dueKey, who){
   db.payments=(db.payments||[]).filter(x=>!(x.card===cardId && x.dueKey===dueKey && x.who===who));
