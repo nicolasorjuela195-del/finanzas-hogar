@@ -231,6 +231,32 @@
   .person-seg button:hover{color:var(--ink)}
   .person-seg button.on{background:var(--ink);color:var(--paper)}
   .person-bar.hidden{display:none}
+  /* tablas financieras */
+  .table-wrap{overflow-x:auto;border:1px solid var(--line);border-radius:var(--radius);background:var(--card);box-shadow:var(--shadow)}
+  .fintable{width:100%;border-collapse:collapse;font-size:13.5px;min-width:380px}
+  .fintable th{text-align:left;padding:11px 14px;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint);font-weight:600;border-bottom:1px solid var(--line);background:#faf7f0}
+  .fintable td{padding:11px 14px;border-bottom:1px solid var(--line-soft)}
+  .fintable td.num, .fintable th.num{text-align:right;font-variant-numeric:tabular-nums}
+  .fintable tbody tr:hover{background:#fbf8f1}
+  .fintable tr.dim td{color:var(--ink-faint)}
+  .fintable tfoot td{padding:11px 14px;font-weight:700;border-top:2px solid var(--line);background:#faf7f0}
+  .person-tables-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .person-table .pt-head{margin-bottom:10px}
+  @media(max-width:820px){ .person-tables-grid{grid-template-columns:1fr} }
+
+  /* dona */
+  .donut-wrap{display:flex;gap:28px;align-items:center;flex-wrap:wrap;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:22px;box-shadow:var(--shadow)}
+  .donut{width:180px;height:180px;border-radius:50%;flex-shrink:0;position:relative;display:flex;align-items:center;justify-content:center}
+  .donut-hole{width:112px;height:112px;background:var(--card);border-radius:50%;display:flex;flex-direction:column;align-items:center;justify-content:center}
+  .donut-total{font-size:19px;font-weight:700;letter-spacing:-.02em}
+  .donut-lbl{font-size:11px;color:var(--ink-faint);text-transform:uppercase;letter-spacing:.1em}
+  .donut-legend{flex:1;min-width:220px;display:flex;flex-direction:column;gap:2px}
+  .leg-item{display:grid;grid-template-columns:14px 1fr auto auto;gap:10px;align-items:center;padding:6px 0;border-bottom:1px solid var(--line-soft);font-size:13.5px}
+  .leg-item:last-child{border-bottom:none}
+  .leg-dot{width:12px;height:12px;border-radius:3px}
+  .leg-name{color:var(--ink)}
+  .leg-val{font-weight:600;font-variant-numeric:tabular-nums}
+  .leg-pct{color:var(--ink-faint);font-size:12px;min-width:34px;text-align:right}
 </style>
 </head>
 <body>
@@ -292,19 +318,14 @@
   <section class="view on" id="v-dash">
     <div id="dashStats"></div>
 
-    <h2 class="sec">Quién debe cuánto este mes</h2>
-    <div class="prop-result-cards" id="oweCards" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:26px"></div>
+    <h2 class="sec">Tarjetas: cupo y uso</h2>
+    <div id="dashCardsTable" style="margin-bottom:28px"></div>
 
-    <div class="two-col">
-      <div>
-        <h2 class="sec">En qué se va el dinero</h2>
-        <div class="cat-list" id="dashCats"></div>
-      </div>
-      <div>
-        <h2 class="sec">Próximos vencimientos</h2>
-        <div class="cards" id="dashDue" style="grid-template-columns:1fr"></div>
-      </div>
-    </div>
+    <h2 class="sec">Desglose por tarjeta y persona</h2>
+    <div id="dashPersonTables" style="margin-bottom:28px"></div>
+
+    <h2 class="sec">En qué se va el dinero</h2>
+    <div id="dashDonut"></div>
   </section>
 
   <!-- ============ INCOMES ============ -->
@@ -1515,64 +1536,120 @@ function renderDash(){
       </div>
     </div>`;
 
-  // owe cards
-  document.getElementById('oweCards').innerHTML=`
-    <div class="card">
-      <span class="who-tag who-a"><span class="dot dot-a"></span>${db.people.a.name}</span>
-      <div class="big">${fmt(oweA)}</div>
-      <div class="rows">
-        <div class="r"><span class="lab">Parte compartida (${Math.round(p.a*100)}%)</span><span class="val">${fmt(totalShared*p.a)}</span></div>
-        <div class="r"><span class="lab">Gastos propios</span><span class="val">${fmt(ownA)}</span></div>
-      </div>
-    </div>
-    <div class="card">
-      <span class="who-tag who-b"><span class="dot dot-b"></span>${db.people.b.name}</span>
-      <div class="big">${fmt(oweB)}</div>
-      <div class="rows">
-        <div class="r"><span class="lab">Parte compartida (${Math.round(p.b*100)}%)</span><span class="val">${fmt(totalShared*p.b)}</span></div>
-        <div class="r"><span class="lab">Gastos propios</span><span class="val">${fmt(ownB)}</span></div>
-      </div>
-    </div>`;
+  // ====== TABLA DE TARJETAS: cupo, usado, saldo, % ======
+  renderDashCardsTable();
+  // ====== TABLAS POR PERSONA (Nico / Mari) ======
+  renderDashPersonTables();
+  // ====== DONA: en qué se va el dinero ======
+  renderDashDonut(list, p);
+}
 
-  // categories (respetan filtro de persona)
+/* Tabla de todas las tarjetas con cupo, usado, saldo disponible y % de uso */
+function renderDashCardsTable(){
+  const el=document.getElementById('dashCardsTable');
+  if(!el) return;
+  if(!db.cards.length){ el.innerHTML='<div class="empty" style="padding:24px"><p>No hay tarjetas registradas.</p></div>'; return; }
+  let tCupo=0, tUsado=0;
+  const rows=db.cards.map(c=>{
+    const usado=cardDebt(c.id);
+    const cupo=c.limit||0;
+    const saldo=cupo-usado;
+    const pctUso=cupo>0?(usado/cupo*100):0;
+    tCupo+=cupo; tUsado+=usado;
+    const pctColor = pctUso>=100?'var(--warn)':pctUso>=70?'#b8873a':'var(--ok)';
+    return `<tr>
+      <td style="font-weight:600">${esc(c.name)}</td>
+      <td class="num">${cupo>0?fmt(cupo):'—'}</td>
+      <td class="num">${fmt(usado)}</td>
+      <td class="num" style="color:${saldo<0?'var(--warn)':'var(--ink)'}">${cupo>0?fmt(saldo):'—'}</td>
+      <td class="num" style="color:${pctColor};font-weight:600">${cupo>0?pctUso.toFixed(1)+'%':'—'}</td>
+    </tr>`;
+  }).join('');
+  const tSaldo=tCupo-tUsado;
+  const tPct=tCupo>0?(tUsado/tCupo*100):0;
+  el.innerHTML=`<div class="table-wrap"><table class="fintable">
+    <thead><tr><th>Tarjeta</th><th class="num">Cupo</th><th class="num">Usado</th><th class="num">Saldo</th><th class="num">% Uso</th></tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr>
+      <td>TOTAL</td><td class="num">${fmt(tCupo)}</td><td class="num">${fmt(tUsado)}</td>
+      <td class="num">${fmt(tSaldo)}</td><td class="num">${tPct.toFixed(1)}%</td>
+    </tr></tfoot>
+  </table></div>`;
+}
+
+/* Dos tablas: cuánto paga cada persona por tarjeta (propio + su parte de lo compartido) */
+function renderDashPersonTables(){
+  const el=document.getElementById('dashPersonTables');
+  if(!el) return;
+  if(!db.cards.length){ el.innerHTML=''; return; }
+  const p=pct();
+  const monthExp=monthExpenses();
+  // para cada persona y tarjeta: propio y parte de ambos
+  const build=(who)=>{
+    const share=who==='a'?p.a:p.b;
+    let tProp=0, tAmbos=0;
+    const rows=db.cards.map(c=>{
+      let propio=0, ambos=0;
+      monthExp.forEach(e=>{
+        if(e.pay===c.id){
+          if(e.who===who) propio+=e.amt;
+          else if(e.who==='shared') ambos+=e.amt*share;
+        }
+      });
+      const total=propio+ambos;
+      tProp+=propio; tAmbos+=ambos;
+      if(total<=0.5 && propio<=0.5 && ambos<=0.5) return `<tr class="dim"><td>${esc(c.name)}</td><td class="num">—</td><td class="num">—</td><td class="num">—</td></tr>`;
+      return `<tr>
+        <td style="font-weight:600">${esc(c.name)}</td>
+        <td class="num">${propio>0?fmt(propio):'$0'}</td>
+        <td class="num">${ambos>0?fmt(ambos):'$0'}</td>
+        <td class="num" style="font-weight:600">${fmt(total)}</td>
+      </tr>`;
+    }).join('');
+    const nm=who==='a'?db.people.a.name:db.people.b.name;
+    return `<div class="person-table">
+      <div class="pt-head"><span class="who-tag ${who==='a'?'who-a':'who-b'}"><span class="dot ${who==='a'?'dot-a':'dot-b'}"></span>${esc(nm)}</span></div>
+      <div class="table-wrap"><table class="fintable">
+        <thead><tr><th>Tarjeta</th><th class="num">Propio</th><th class="num">Ambos</th><th class="num">Total</th></tr></thead>
+        <tbody>${rows}</tbody>
+        <tfoot><tr><td>TOTAL</td><td class="num">${fmt(tProp)}</td><td class="num">${fmt(tAmbos)}</td><td class="num">${fmt(tProp+tAmbos)}</td></tr></tfoot>
+      </table></div>
+    </div>`;
+  };
+  el.innerHTML=`<div class="person-tables-grid">${build('a')}${build('b')}</div>`;
+}
+
+/* Dona de categorías (en qué se va el dinero) */
+function renderDashDonut(list, p){
+  const el=document.getElementById('dashDonut');
+  if(!el) return;
   const cats={};
   list.filter(e=>matchPerson(e.who)).forEach(e=>{ cats[e.cat]=(cats[e.cat]||0)+e.amt; });
   const catArr=Object.entries(cats).sort((a,b)=>b[1]-a[1]);
-  const maxCat=catArr.length?catArr[0][1]:1;
-  const colors=["--teal","--gold","--plum","--clay","--ok"];
-  const dc=document.getElementById('dashCats');
-  if(!catArr.length){ dc.innerHTML='<div class="empty" style="padding:24px"><p>Sin gastos este mes.</p></div>'; }
-  else dc.innerHTML=catArr.map((c,i)=>`
-    <div class="cat-item">
-      <div class="top"><span class="n">${esc(c[0])}</span><span class="a">${fmt(c[1])}</span></div>
-      <div class="track"><i style="width:${c[1]/maxCat*100}%;background:var(${colors[i%colors.length]})"></i></div>
-    </div>`).join('');
-
-  // upcoming due dates — por ciclo de facturación real
-  const cardById={}; db.cards.forEach(c=>cardById[c.id]=c);
-  const dueGroups={};
-  db.expenses.forEach(e=>{
-    if(e.pay && cardById[e.pay]){
-      const c=cardById[e.pay];
-      const cyc=cycleFor(e.date,c);
-      if(!dueGroups[cyc.dueKey]) dueGroups[cyc.dueKey]={due:cyc.due,total:0,names:new Set()};
-      dueGroups[cyc.dueKey].total+=e.amt;
-      dueGroups[cyc.dueKey].names.add(c.name);
-    }
+  if(!catArr.length){ el.innerHTML='<div class="empty" style="padding:24px"><p>Sin gastos este mes.</p></div>'; return; }
+  const total=catArr.reduce((s,c)=>s+c[1],0);
+  const palette=['#2f7d6b','#b8873a','#7a5b8f','#c0603a','#3b7d4f','#5a8fa8','#a8894a','#8f5b7a','#6b8f5b','#a85a5a','#5b6b8f','#8a7a4a'];
+  // construir el conic-gradient
+  let acc=0; const stops=[];
+  catArr.forEach((c,i)=>{
+    const frac=c[1]/total;
+    const from=acc*100, to=(acc+frac)*100;
+    stops.push(`${palette[i%palette.length]} ${from.toFixed(2)}% ${to.toFixed(2)}%`);
+    acc+=frac;
   });
-  const due=Object.values(dueGroups).filter(g=>daysUntil(g.due)>=-3).sort((a,b)=>a.due-b.due).slice(0,4);
-  const dd=document.getElementById('dashDue');
-  if(!due.length){ dd.innerHTML='<div class="empty" style="padding:24px"><p>Sin pagos de tarjeta próximos.</p></div>'; }
-  else dd.innerHTML=due.map(g=>{
-    const days=daysUntil(g.due); const soon=days>=0&&days<=7;
-    return `<div class="card" style="padding:14px 16px">
-      <h3 style="font-size:15px;margin-bottom:2px">${g.due.toLocaleDateString("es-CO",{day:'numeric',month:'long'})}</h3>
-      <div class="meta" style="margin-bottom:6px">${[...g.names].map(esc).join(' · ')}</div>
-      <div class="rows" style="margin-top:0;border-top:none;padding-top:0">
-        <div class="r"><span class="lab">A pagar</span><span class="val ${soon?'warn':''}">${fmt(g.total)} · en ${days} d</span></div>
-      </div>
-    </div>`;
-  }).join('');
+  const legend=catArr.map((c,i)=>`
+    <div class="leg-item">
+      <span class="leg-dot" style="background:${palette[i%palette.length]}"></span>
+      <span class="leg-name">${esc(c[0])}</span>
+      <span class="leg-val">${fmt(c[1])}</span>
+      <span class="leg-pct">${Math.round(c[1]/total*100)}%</span>
+    </div>`).join('');
+  el.innerHTML=`<div class="donut-wrap">
+    <div class="donut" style="background:conic-gradient(${stops.join(',')})">
+      <div class="donut-hole"><div class="donut-total">${fmtK(total)}</div><div class="donut-lbl">total</div></div>
+    </div>
+    <div class="donut-legend">${legend}</div>
+  </div>`;
 }
 
 /* ---------- shared render ---------- */
