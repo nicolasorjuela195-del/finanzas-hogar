@@ -241,6 +241,7 @@
   .fintable tr.dim td{color:var(--ink-faint)}
   .fintable tfoot td{padding:11px 14px;font-weight:700;border-top:2px solid var(--line);background:#faf7f0}
   .person-tables-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
+  .person-tables-grid.one{grid-template-columns:1fr;max-width:560px}
   .person-table .pt-head{margin-bottom:10px}
   @media(max-width:820px){ .person-tables-grid{grid-template-columns:1fr} }
 
@@ -1616,7 +1617,12 @@ function renderDashPersonTables(){
       </table></div>
     </div>`;
   };
-  el.innerHTML=`<div class="person-tables-grid">${build('a')}${build('b')}</div>`;
+  // respeta el filtro: en Nico solo Nico, en Mari solo Mari, en Todo/Compartido las dos
+  let tablesHtml, oneOnly=false;
+  if(curPerson==='a'){ tablesHtml=build('a'); oneOnly=true; }
+  else if(curPerson==='b'){ tablesHtml=build('b'); oneOnly=true; }
+  else tablesHtml=build('a')+build('b');
+  el.innerHTML=`<div class="person-tables-grid${oneOnly?' one':''}">${tablesHtml}</div>`;
 }
 
 /* Dona de categorías (en qué se va el dinero) */
