@@ -958,7 +958,17 @@ function renderCalcRows(){
     c.innerHTML='<p class="hint">Aún no hay gastos. Pulsa «Añadir gasto» para empezar.</p>';
     return;
   }
-  c.innerHTML=db.settle.map((r,i)=>`
+  c.innerHTML=db.settle.map((r,i)=>{
+    if(r.direct){
+      // deuda fija generada por pago de tarjeta: no editable, valor entero que el otro debe
+      const deudor = r.who==='a' ? db.people.b.name : db.people.a.name;
+      return `<div style="display:grid;grid-template-columns:1fr auto 30px;gap:8px;align-items:center;margin-bottom:8px;padding:9px 11px;background:var(--teal-soft);border-radius:9px">
+        <span style="font-size:13px"><b>${esc(r.concept||'Deuda directa')}</b><br><span style="font-size:11px;color:#1e564a">${esc(deudor)} debe este monto completo · no se reparte</span></span>
+        <span style="font-weight:600;font-size:13.5px;text-align:right">${fmt(r.amt)}</span>
+        <button onclick="calcDel(${i})" title="Borrar (cuando ya te pagó)" style="background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:16px">×</button>
+      </div>`;
+    }
+    return `
     <div style="display:grid;grid-template-columns:1fr 110px 130px 30px;gap:8px;align-items:center;margin-bottom:8px">
       <input type="text" value="${esc(r.concept||'')}" placeholder="Concepto" onchange="calcEdit(${i},'concept',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-family:inherit;font-size:13.5px;background:var(--paper)">
       <select onchange="calcEdit(${i},'who',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-family:inherit;font-size:13.5px;background:var(--paper)">
@@ -967,7 +977,8 @@ function renderCalcRows(){
       </select>
       <input type="text" inputmode="decimal" value="${r.amt?formatLiveCO(String(r.amt).replace('.',',')):''}" placeholder="Valor" oninput="this.value=formatLiveCO(this.value)" onchange="calcEdit(${i},'amt',parseNum(this.value))" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-family:inherit;font-size:13.5px;background:var(--paper);text-align:right">
       <button onclick="calcDel(${i})" style="background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:16px">×</button>
-    </div>`).join('');
+    </div>`;
+  }).join('');
 }
 function addCalcRow(){
   if(!db.settle) db.settle=[];
@@ -987,29 +998,45 @@ function calcClear(){
 function calcCompute(){
   const el=document.getElementById('calcResult');
   if(!el) return;
-  const rows=(db.settle||[]).filter(r=>r.amt>0);
-  if(!rows.length){ el.innerHTML=''; return; }
+  const all=(db.settle||[]).filter(r=>r.amt>0);
+  if(!all.length){ el.innerHTML=''; return; }
   const p=pct();
+  const nA=db.people.a.name, nB=db.people.b.name;
+
+  // 1) gastos normales: se reparten 61/39
+  const shared=all.filter(r=>!r.direct);
   let pagoA=0, pagoB=0;
-  rows.forEach(r=>{ if(r.who==='a') pagoA+=r.amt; else pagoB+=r.amt; });
+  shared.forEach(r=>{ if(r.who==='a') pagoA+=r.amt; else pagoB+=r.amt; });
   const total=pagoA+pagoB;
   const tocaA=total*p.a, tocaB=total*p.b;
-  // saldo de cada uno = lo que pagó - lo que le tocaba. Positivo = le deben; negativo = debe.
-  const saldoA=pagoA-tocaA;
-  const saldoB=pagoB-tocaB;
-  const nA=db.people.a.name, nB=db.people.b.name;
+  // saldo por reparto: lo que pagó - lo que le tocaba
+  let saldoA=pagoA-tocaA;
+
+  // 2) deudas directas (valor fijo, NO se reparten): quien pagó queda acreedor del total
+  const directs=all.filter(r=>r.direct);
+  let directNote='';
+  directs.forEach(r=>{
+    // r.who = quien puso la plata (acreedor). El otro le debe r.amt completo.
+    if(r.who==='a') saldoA += r.amt;   // a Nico le deben ese monto entero
+    else saldoA -= r.amt;              // Nico debe ese monto entero
+  });
+
   let veredicto;
   if(Math.abs(saldoA)<1){ veredicto=`<div style="text-align:center;font-weight:600;color:var(--ok)">Están a mano ✓</div>`; }
   else if(saldoA>0){ veredicto=`<div style="text-align:center;font-size:15px"><b>${esc(nB)}</b> le debe <b style="color:var(--ok)">${fmt(saldoA)}</b> a <b>${esc(nA)}</b></div>`; }
   else { veredicto=`<div style="text-align:center;font-size:15px"><b>${esc(nA)}</b> le debe <b style="color:var(--ok)">${fmt(Math.abs(saldoA))}</b> a <b>${esc(nB)}</b></div>`; }
+
+  const directRows = directs.map(r=>`<div class="r"><span class="lab">${esc(r.concept||'Deuda directa')} <span style="font-size:11px;color:var(--ink-faint)">(fija, no se reparte)</span></span><span class="val">${r.who==='a'?esc(nB)+' debe ':esc(nA)+' debe '}${fmt(r.amt)}</span></div>`).join('');
+
   el.innerHTML=`
     <div style="border-top:1px solid var(--line);padding-top:16px">
       <div class="rows">
-        <div class="r"><span class="lab">Total pagado entre ambos</span><span class="val">${fmt(total)}</span></div>
+        <div class="r"><span class="lab">Gastos repartidos entre ambos</span><span class="val">${fmt(total)}</span></div>
         <div class="r"><span class="lab">${esc(nA)} pagó</span><span class="val">${fmt(pagoA)}</span></div>
         <div class="r"><span class="lab">${esc(nB)} pagó</span><span class="val">${fmt(pagoB)}</span></div>
         <div class="r"><span class="lab">Le tocaba a ${esc(nA)} (${Math.round(p.a*100)}%)</span><span class="val">${fmt(tocaA)}</span></div>
         <div class="r"><span class="lab">Le tocaba a ${esc(nB)} (${Math.round(p.b*100)}%)</span><span class="val">${fmt(tocaB)}</span></div>
+        ${directRows?'<div style="height:8px"></div>'+directRows:''}
       </div>
       <div style="margin-top:14px;padding:14px;background:var(--paper);border-radius:10px">${veredicto}</div>
     </div>`;
@@ -2013,14 +2040,15 @@ function savePayCard(e){
       id:uid(), card:payingContext.card, dueKey:payingContext.dueKey,
       who:payingContext.otherWho, payer:payingContext.who, amt:payingContext.otherAmt, acc, date
     });
-    // registrar la deuda en la calculadora: el otro me debe su parte
+    // registrar la deuda como DIRECTA: el otro me debe su parte COMPLETA (no se reparte)
     const cardName=(db.cards.find(c=>c.id===payingContext.card)||{}).name||'tarjeta';
     if(!db.settle) db.settle=[];
     db.settle.push({
       concept:`Pago ${cardName} (parte de ${whoName(payingContext.otherWho)})`,
-      who:payingContext.who,          // yo pagué
-      amt:payingContext.otherAmt,     // la parte del otro
-      auto:true
+      who:payingContext.who,          // quién puso la plata (a quién le deben)
+      debtor:payingContext.otherWho,  // quién debe
+      amt:payingContext.otherAmt,     // valor fijo que debe, entero
+      direct:true                     // NO se reparte 61/39
     });
   }
   payingContext=null;
