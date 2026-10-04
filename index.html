@@ -356,6 +356,9 @@
   <section class="view" id="v-topay">
     <h2 class="sec">Lo que tienes que pagar, por fecha</h2>
     <p class="hint" style="margin-bottom:16px;max-width:600px">Cada compra con tarjeta se agrupa según el ciclo al que pertenece y la fecha real en que la pagas. No depende del mes en que compraste, sino del día de corte de cada tarjeta.</p>
+    <div class="filter-bar" style="margin-bottom:16px">
+      <button class="btn ghost sm" id="togglePaidBtn" onclick="toggleShowPaid()">Ver pagadas</button>
+    </div>
     <div id="topayWrap"></div>
   </section>
 
@@ -738,12 +741,20 @@ function defaultAccountFor(who){
 function cardDebt(cardId){
   const card=db.cards.find(c=>c.id===cardId);
   if(!card) return 0;
-  const today=new Date(); today.setHours(0,0,0,0);
+  const p=pct();
   let debt=0;
   (db.expenses||[]).forEach(e=>{
     if(e.pay===cardId){
       const cyc=cycleFor(e.date, card);
-      if(cyc.due >= today) debt+=e.amt; // aún no se ha pagado
+      // partes de esta compra según de quién es
+      let parts;
+      if(e.who==="shared") parts=[{who:"a",amt:e.amt*p.a},{who:"b",amt:e.amt*p.b}];
+      else parts=[{who:e.who,amt:e.amt}];
+      // cada parte suma a la deuda solo si NO ha sido marcada como pagada
+      parts.forEach(part=>{
+        const pagado=findPayment(cardId, cyc.dueKey, part.who);
+        if(!pagado) debt+=part.amt;
+      });
     }
   });
   return debt;
@@ -892,6 +903,8 @@ function accCur(accId){
 }
 const uid = () => Math.random().toString(36).slice(2,9);
 let curMonth = new Date();
+let showPaid = false; // en "Por pagar": false = pendientes, true = pagadas
+function toggleShowPaid(){ showPaid=!showPaid; renderTopay(); }
 function monthKey(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
 function monthLabel(d){ return d.toLocaleDateString("es-CO",{month:"long",year:"numeric"}); }
 
@@ -1135,7 +1148,32 @@ function renderTopay(){
     else if(e.who==="a"){ bc.partA+=e.amt; }
     else if(e.who==="b"){ bc.partB+=e.amt; }
   });
-  const keys=Object.keys(groups).sort();
+  // marcar cada grupo (ciclo) como totalmente pagado o no
+  Object.values(groups).forEach(g=>{
+    let allPaid=true, anyDue=false;
+    Object.values(g.byCard).forEach(bc=>{
+      ['a','b'].forEach(who=>{
+        const amt=who==='a'?bc.partA:bc.partB;
+        if(amt>0.5){ anyDue=true; if(!findPayment(bc.card.id, g.dueKey, who)) allPaid=false; }
+      });
+    });
+    g.fullyPaid = anyDue && allPaid;
+  });
+
+  // separar según el toggle: por defecto solo pendientes; "Ver pagadas" muestra las pagadas
+  const allKeys=Object.keys(groups).sort();
+  const pendKeys=allKeys.filter(k=>!groups[k].fullyPaid);
+  const paidKeys=allKeys.filter(k=>groups[k].fullyPaid);
+  const keys = showPaid ? paidKeys : pendKeys;
+
+  // actualizar texto del botón
+  const btn=document.getElementById('togglePaidBtn');
+  if(btn) btn.textContent = showPaid ? `← Ver pendientes (${pendKeys.length})` : `Ver pagadas (${paidKeys.length})`;
+
+  if(!keys.length){
+    w.innerHTML=empty(showPaid?"✓":"📅", showPaid?"Aún no has pagado ningún ciclo completo. Cuando ambos paguen una tarjeta, aparecerá aquí.":"¡Todo al día! No tienes pagos pendientes. Pulsa «Ver pagadas» para revisar lo que ya pagaste.");
+    return;
+  }
 
   w.innerHTML=keys.map(k=>{
     const g=groups[k];
@@ -1611,15 +1649,20 @@ function renderDashPersonTables(){
   if(!el) return;
   if(!db.cards.length){ el.innerHTML=''; return; }
   const p=pct();
-  const monthExp=monthExpenses();
-  // para cada persona y tarjeta: propio y parte de ambos
+  // Solo contamos las compras cuyo ciclo de pago (due) cae en el mes que se está viendo.
+  // Así coincide con "Por pagar" y no mezcla compras del siguiente corte.
+  const inShownMonth = (card, dateISO) => {
+    const cyc=cycleFor(dateISO, card);
+    return cyc.due.getFullYear()===curMonth.getFullYear() && cyc.due.getMonth()===curMonth.getMonth();
+  };
+  // para cada persona y tarjeta: propio y parte de ambos (del corte de este mes)
   const build=(who)=>{
     const share=who==='a'?p.a:p.b;
     let tProp=0, tAmbos=0;
     const rows=db.cards.map(c=>{
       let propio=0, ambos=0;
-      monthExp.forEach(e=>{
-        if(e.pay===c.id){
+      (db.expenses||[]).forEach(e=>{
+        if(e.pay===c.id && inShownMonth(c, e.date)){
           if(e.who===who) propio+=e.amt;
           else if(e.who==='shared') ambos+=e.amt*share;
         }
