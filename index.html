@@ -457,7 +457,7 @@ function blankDB(){
     config:{
       people:{a:{name:"Nico",salary:7500000}, b:{name:"Mari",salary:4400000}},
       cards:[], cardLimits:{},
-      fixedExpenses:[], savingGoals:[],
+      fixedExpenses:[], savingGoals:[], accounts:[],
       categories:CATS.map(c=>c.name)
     },
     months:{}
@@ -484,11 +484,11 @@ function shiftMonth(key,delta){
 /* devuelve (y crea si falta) el objeto del mes */
 function M(key){
   key=key||curMonthKey;
-  if(!db.months[key]) db.months[key]={buys:[],pays:[],reimbursed:{},moves:{a:[],b:[]},resumenExtra:{},settle:[]};
+  if(!db.months[key]) db.months[key]={buys:[],pays:[],reimbursed:{},moves:{a:[],b:[]},resumenExtra:{},settle:[],transfers:[]};
   const mo=db.months[key];
   if(!mo.buys)mo.buys=[]; if(!mo.pays)mo.pays=[]; if(!mo.reimbursed)mo.reimbursed={};
   if(!mo.moves)mo.moves={a:[],b:[]}; if(!mo.moves.a)mo.moves.a=[]; if(!mo.moves.b)mo.moves.b=[];
-  if(!mo.resumenExtra)mo.resumenExtra={}; if(!mo.settle)mo.settle=[];
+  if(!mo.resumenExtra)mo.resumenExtra={}; if(!mo.settle)mo.settle=[]; if(!mo.transfers)mo.transfers=[];
   return mo;
 }
 function normalizeDB(){
@@ -496,7 +496,7 @@ function normalizeDB(){
   const c=db.config;
   if(!c.people) c.people={a:{name:"Nico",salary:0},b:{name:"Mari",salary:0}};
   if(!c.cards)c.cards=[]; if(!c.cardLimits)c.cardLimits={};
-  if(!c.fixedExpenses)c.fixedExpenses=[]; if(!c.savingGoals)c.savingGoals=[];
+  if(!c.fixedExpenses)c.fixedExpenses=[]; if(!c.savingGoals)c.savingGoals=[]; if(!c.accounts)c.accounts=[];
   if(!c.categories||!c.categories.length)c.categories=blankDB().config.categories;
   if(!db.months)db.months={};
 }
@@ -537,6 +537,30 @@ function cardPersonParts(cardId,who,key){
 /* ¿pagó esta persona su parte de esta tarjeta este mes? */
 function findPay(cardId,who,key){
   return M(key).pays.find(x=>x.card===cardId && x.who===who);
+}
+
+/* ---- cuentas bancarias ---- */
+function accById(id){ return (db.config.accounts||[]).find(a=>a.id===id); }
+function accCur(id){ const a=accById(id); return a&&a.cur==='USD'?'USD':'COP'; }
+/* saldo de una cuenta: inicial + ingresos − gastos (movimientos ligados) + transfers recibidas − enviadas.
+   Suma TODOS los meses (el saldo es acumulado, no por mes). */
+function accountBalance(accId){
+  const a=accById(accId); if(!a) return 0;
+  let bal=a.bal0||0;
+  Object.values(db.months).forEach(mo=>{
+    // movimientos de ambas personas ligados a esta cuenta
+    ['a','b'].forEach(who=>{
+      (mo.moves&&mo.moves[who]||[]).forEach(m=>{
+        if(m.acc===accId){ bal += (m.dir>0 ? m.amt : -m.amt); }
+      });
+    });
+    // transferencias
+    (mo.transfers||[]).forEach(t=>{
+      if(t.to===accId)   bal += (t.amtDest!==undefined ? t.amtDest : t.amt);
+      if(t.from===accId) bal -= t.amt;
+    });
+  });
+  return bal;
 }
 
 /* ============================================================
@@ -967,7 +991,10 @@ function renderCuentas(){
         <h2>Cuentas</h2>
         <p class="sub">El control de los movimientos propios de cada uno: lo que entra y lo que sale, día a día.</p>
       </div>
-      <button class="btn" onclick="openMoveModal()">+ Agregar movimiento</button>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn ghost" onclick="openTransferModal()">⇄ Transferir</button>
+        <button class="btn" onclick="openMoveModal()">+ Agregar movimiento</button>
+      </div>
     </div>
 
     <div class="seg" style="margin-bottom:22px">
@@ -975,15 +1002,12 @@ function renderCuentas(){
       <button class="${who==='b'?'on':''}" onclick="setCuentasPerson('b')">${esc(whoName('b'))}</button>
     </div>
 
-    <div class="hero-strip" style="grid-template-columns:repeat(3,1fr)">
-      <div class="stat"><div class="k">Total ingresos</div><div class="v sm num" style="color:var(--ok)">${fmt(inc).slice(1)}</div><div class="foot">este mes</div></div>
-      <div class="stat"><div class="k">Total gastos</div><div class="v sm num">${fmt(out).slice(1)}</div><div class="foot">este mes</div></div>
-      <div class="stat"><div class="k">Saldo del mes</div><div class="v sm num" style="color:${saldo<0?'var(--warn)':'var(--ok)'}">${saldo<0?'−':'+'}${fmt(Math.abs(saldo)).slice(1)}</div><div class="foot">ingresos − gastos</div></div>
-    </div>
+    ${accountsStrip(who)}
 
-    <div class="hero-strip" style="grid-template-columns:1fr 1fr;margin-bottom:28px">
-      <div class="stat" style="background:var(--nico-soft);border-color:var(--nico)"><div class="k" style="color:var(--nico-ink)">Ahorros en dólares</div><div class="v sm" style="color:var(--nico-ink)">${fmtUSD(saveUSD)}</div><div class="foot" style="color:var(--nico-ink);opacity:.7">cuenta USD</div></div>
-      <div class="stat"><div class="k">Ahorros en pesos</div><div class="v sm num">${fmt(saveCOP).slice(1)}</div><div class="foot">este mes</div></div>
+    <div class="hero-strip" style="grid-template-columns:repeat(3,1fr);margin-bottom:28px">
+      <div class="stat"><div class="k">Ingresos del mes</div><div class="v sm num" style="color:var(--ok)">${fmt(inc).slice(1)}</div><div class="foot">solo este mes</div></div>
+      <div class="stat"><div class="k">Gastos del mes</div><div class="v sm num">${fmt(out).slice(1)}</div><div class="foot">solo este mes</div></div>
+      <div class="stat"><div class="k">Balance del mes</div><div class="v sm num" style="color:${saldo<0?'var(--warn)':'var(--ok)'}">${saldo<0?'−':'+'}${fmt(Math.abs(saldo)).slice(1)}</div><div class="foot">ingresos − gastos</div></div>
     </div>
 
     <div class="block-label">Movimientos de ${esc(monthName(curMonthKey))}</div>
@@ -991,6 +1015,32 @@ function renderCuentas(){
       <thead><tr><th>Fecha</th><th>Descripción</th><th>Categoría</th><th>Banco</th><th>Entra</th><th>Sale</th><th></th></tr></thead>
       <tbody>${moves.map(m=>moveRow(m,who)).join('')}</tbody>
     </table></div>`:'<div class="card"><div class="empty"><div class="ico">📒</div><p>Sin movimientos este mes. Pulsa «Agregar movimiento».</p></div></div>'}`;
+}
+/* tarjetas de saldo de las cuentas de una persona (COP y USD separados) */
+function accountsStrip(who){
+  const accs=(db.config.accounts||[]).filter(a=>a.who===who||a.who==='shared');
+  if(!accs.length) return '<div class="card" style="margin-bottom:22px;padding:16px 20px;color:var(--ink-soft);font-size:13.5px">Aún no tienes cuentas. Agrégalas en Configuración para ver tus saldos aquí.</div>';
+  const totalCOP=accs.filter(a=>(a.cur||'COP')==='COP').reduce((s,a)=>s+accountBalance(a.id),0);
+  const totalUSD=accs.filter(a=>a.cur==='USD').reduce((s,a)=>s+accountBalance(a.id),0);
+  const hayUSD=accs.some(a=>a.cur==='USD');
+  const cards=accs.map(a=>{
+    const bal=accountBalance(a.id);
+    const cur=a.cur||'COP';
+    const isShared=a.who==='shared';
+    return `<div class="stat" style="${cur==='USD'?'background:var(--nico-soft);border-color:var(--nico)':''}">
+      <div class="k" style="${cur==='USD'?'color:var(--nico-ink)':''}">${esc(a.name)}${isShared?' <span class="tag cat" style="font-size:10px">compartida</span>':''}</div>
+      <div class="v sm num" style="${cur==='USD'?'color:var(--nico-ink)':(bal<0?'color:var(--warn)':'')}">${cur==='USD'?fmtUSD(bal):fmt(bal).slice(1)}</div>
+      <div class="foot" style="${cur==='USD'?'color:var(--nico-ink);opacity:.7':''}">${cur==='USD'?'en dólares':'saldo actual'}</div>
+    </div>`;
+  }).join('');
+  return `<div class="hero-strip" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:16px">
+    <div class="stat" style="background:var(--dark);border-color:var(--dark)">
+      <div class="k" style="color:#b0a893">Saldo total (pesos)</div>
+      <div class="v sm num" style="color:#fff">${fmt(totalCOP).slice(1)}</div>
+      <div class="foot" style="color:#8c8578">${hayUSD?'+ '+fmtUSD(totalUSD)+' en dólares':'tus cuentas en COP'}</div>
+    </div>
+    ${cards}
+  </div>`;
 }
 function moveRow(m,who){
   const auto = m.auto ? ' <span class="tag cat">auto</span>' : '';
@@ -1052,13 +1102,24 @@ function renderConfig(){
 
         <div class="cfg-card">
           <h3>Gastos fijos</h3>
-          <p class="desc">Se repiten en el Resumen cada mes (arriendo, internet…).</p>
-          ${db.config.fixedExpenses.map(f=>`<div class="fieldrow">
-            <span class="fl"><input class="txt" value="${esc(f.name)}" onchange="setFixedName('${f.id}',this.value)"></span>
-            <span style="display:flex;gap:6px;align-items:center">
-              <input value="${f.amt||''}" inputmode="numeric" onchange="setFixedAmt('${f.id}',this.value)">
+          <p class="desc">Se repiten en el Resumen cada mes. Puedes decir de quién es y cuándo se paga.</p>
+          ${db.config.fixedExpenses.map(f=>`<div style="padding:12px 0;border-bottom:1px solid var(--line-soft)">
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+              <input class="txt" style="flex:1;width:auto" value="${esc(f.name)}" onchange="setFixedName('${f.id}',this.value)" placeholder="Nombre">
+              <input style="width:120px" value="${f.amt||''}" inputmode="numeric" onchange="setFixedAmt('${f.id}',this.value)" placeholder="valor">
               <button class="del" onclick="delFixed('${f.id}')" title="Borrar">×</button>
-            </span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
+              <select onchange="setFixedWho('${f.id}',this.value)" style="padding:6px 9px;border:1px solid var(--line);border-radius:8px;font-size:12.5px;background:var(--bg);color:var(--ink)">
+                <option value="shared"${(f.who||'shared')==='shared'?' selected':''}>Ambos</option>
+                <option value="a"${f.who==='a'?' selected':''}>${esc(whoName('a'))}</option>
+                <option value="b"${f.who==='b'?' selected':''}>${esc(whoName('b'))}</option>
+              </select>
+              <span style="color:var(--ink-faint)">Corte</span>
+              <input value="${f.cut||''}" inputmode="numeric" onchange="setFixedCut('${f.id}',this.value)" placeholder="día" style="width:52px;padding:6px;text-align:center;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)">
+              <span style="color:var(--ink-faint)">Pago</span>
+              <input value="${f.pay||''}" inputmode="numeric" onchange="setFixedPay('${f.id}',this.value)" placeholder="día" style="width:52px;padding:6px;text-align:center;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)">
+            </div>
           </div>`).join('')}
           <button class="btn ghost sm" style="margin-top:12px" onclick="addFixed()">+ Añadir gasto fijo</button>
         </div>
@@ -1075,6 +1136,31 @@ function renderConfig(){
           </div>`).join('')}
           <button class="btn ghost sm" style="margin-top:12px" onclick="addGoal()">+ Añadir meta</button>
         </div>
+
+        <div class="cfg-card">
+          <h3>Cuentas y bancos</h3>
+          <p class="desc">Tus cuentas (Bancolombia, Falabella, Global66…). El saldo se calcula solo con los movimientos. Escribe el saldo inicial que tiene hoy cada una.</p>
+          ${db.config.accounts.map(a=>`<div style="padding:12px 0;border-bottom:1px solid var(--line-soft)">
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+              <input class="txt" style="flex:1;width:auto" value="${esc(a.name)}" onchange="setAccName('${a.id}',this.value)" placeholder="Nombre">
+              <button class="del" onclick="delAccount('${a.id}')" title="Borrar">×</button>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
+              <select onchange="setAccWho('${a.id}',this.value)" style="padding:6px 9px;border:1px solid var(--line);border-radius:8px;font-size:12.5px;background:var(--bg);color:var(--ink)">
+                <option value="a"${(a.who||'a')==='a'?' selected':''}>${esc(whoName('a'))}</option>
+                <option value="b"${a.who==='b'?' selected':''}>${esc(whoName('b'))}</option>
+                <option value="shared"${a.who==='shared'?' selected':''}>Compartida</option>
+              </select>
+              <select onchange="setAccCur('${a.id}',this.value)" style="padding:6px 9px;border:1px solid var(--line);border-radius:8px;font-size:12.5px;background:var(--bg);color:var(--ink)">
+                <option value="COP"${(a.cur||'COP')==='COP'?' selected':''}>Pesos</option>
+                <option value="USD"${a.cur==='USD'?' selected':''}>Dólares</option>
+              </select>
+              <span style="color:var(--ink-faint)">Saldo inicial</span>
+              <input value="${a.bal0||''}" inputmode="numeric" onchange="setAccBal0('${a.id}',this.value)" placeholder="0" style="width:110px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
+            </div>
+          </div>`).join('')}
+          <button class="btn ghost sm" style="margin-top:12px" onclick="addAccount()">+ Añadir cuenta</button>
+        </div>
       </div>
     </div>`;
 }
@@ -1088,7 +1174,10 @@ function delCard(id){ if(!confirm('¿Borrar esta tarjeta?'))return; db.config.ca
 function addCard(){ const n=prompt('Nombre de la tarjeta:'); if(!n)return; db.config.cards.push({id:uid(),name:n.trim()}); save(); renderConfig(); }
 function setSalary(w,v){ db.config.people[w].salary=parseNum(v); save(); renderConfig(); }
 function setName(w,v){ db.config.people[w].name=v.trim()||(w==='a'?'Nico':'Mari'); save(); renderAll(); }
-function addFixed(){ const n=prompt('Nombre del gasto fijo:'); if(!n)return; db.config.fixedExpenses.push({id:uid(),name:n.trim(),amt:0,cat:'Vivienda'}); save(); renderConfig(); }
+function addFixed(){ const n=prompt('Nombre del gasto fijo:'); if(!n)return; db.config.fixedExpenses.push({id:uid(),name:n.trim(),amt:0,cat:'Hogar',who:'shared',pay:'',cut:''}); save(); renderConfig(); }
+function setFixedWho(id,v){ const f=db.config.fixedExpenses.find(x=>x.id===id); if(f){f.who=v;save();renderConfig();} }
+function setFixedPay(id,v){ const f=db.config.fixedExpenses.find(x=>x.id===id); if(f){f.pay=v;save();} }
+function setFixedCut(id,v){ const f=db.config.fixedExpenses.find(x=>x.id===id); if(f){f.cut=v;save();} }
 function setFixedName(id,v){ const f=db.config.fixedExpenses.find(x=>x.id===id); if(f){f.name=v.trim();save();} }
 function setFixedAmt(id,v){ const f=db.config.fixedExpenses.find(x=>x.id===id); if(f){f.amt=parseNum(v);save();renderConfig();} }
 function delFixed(id){ db.config.fixedExpenses=db.config.fixedExpenses.filter(f=>f.id!==id); save(); renderConfig(); }
@@ -1096,6 +1185,13 @@ function addGoal(){ const n=prompt('Nombre de la meta de ahorro:'); if(!n)return
 function setGoalName(id,v){ const g=db.config.savingGoals.find(x=>x.id===id); if(g){g.name=v.trim();save();} }
 function setGoalAmt(id,v){ const g=db.config.savingGoals.find(x=>x.id===id); if(g){g.amt=parseNum(v);save();renderConfig();} }
 function delGoal(id){ db.config.savingGoals=db.config.savingGoals.filter(g=>g.id!==id); save(); renderConfig(); }
+/* ---- cuentas bancarias (config) ---- */
+function addAccount(){ const n=prompt('Nombre de la cuenta/banco (ej: Bancolombia):'); if(!n)return; db.config.accounts.push({id:uid(),name:n.trim(),who:'a',cur:'COP',bal0:0}); save(); renderConfig(); }
+function setAccName(id,v){ const a=accById(id); if(a){a.name=v.trim();save();} }
+function setAccWho(id,v){ const a=accById(id); if(a){a.who=v;save();renderConfig();} }
+function setAccCur(id,v){ const a=accById(id); if(a){a.cur=v;save();renderConfig();} }
+function setAccBal0(id,v){ const a=accById(id); if(a){a.bal0=parseNum(v);save();renderConfig();} }
+function delAccount(id){ if(!confirm('¿Borrar esta cuenta?'))return; db.config.accounts=db.config.accounts.filter(a=>a.id!==id); save(); renderConfig(); }
 </script>
 <script>
 /* ============================================================
@@ -1278,10 +1374,16 @@ function openMoveModal(){
         <div class="fld"><label>Fecha</label><input type="date" id="mDate" value="${today()}"></div>
       </div>
       <div id="mCatBox">${moveCatPicker('','')}</div>
-      <div class="fld"><label>Banco</label><input id="mBank" placeholder="Bancolombia…"></div>
-      <p class="hint">Para pasar plata a tus ahorros, elige la categoría «Ahorro».</p>
+      <div class="fld"><label>¿De qué cuenta?</label>${accSelect('mAcc',who)}</div>
+      <p class="hint">Afecta el saldo de esa cuenta. Para pasar plata a tus ahorros, usa el botón «Transferir».</p>
       <button type="submit" class="btn">Guardar movimiento</button>
     </form>`);
+}
+/* selector de cuentas de una persona (sus propias + compartidas) */
+function accSelect(id,who,selectedId){
+  const accs=(db.config.accounts||[]).filter(a=>a.who===who||a.who==='shared');
+  if(!accs.length) return `<input id="${id}" placeholder="Nombre del banco…" data-nobank="1">`;
+  return `<select id="${id}">${accs.map(a=>`<option value="${a.id}"${a.id===selectedId?' selected':''}>${esc(a.name)}${a.cur==='USD'?' (USD)':''}</option>`).join('')}</select>`;
 }
 /* picker de categoría para movimientos (incluye Sueldo/Ahorro) */
 function moveCatPicker(cat,sub){
@@ -1308,19 +1410,66 @@ updateAutoCat=function(prefix){
 function saveMove(e){
   e.preventDefault();
   const who=cuentasPerson;
+  const accEl=document.getElementById('mAcc');
+  const isSelect = accEl && accEl.tagName==='SELECT';
+  const accId = isSelect ? accEl.value : null;
+  const bankName = isSelect ? (accById(accId)||{}).name : (accEl?accEl.value.trim():'');
   M().moves[who].push({
     id:uid(), auto:false,
     date:document.getElementById('mDate').value,
     desc:document.getElementById('mDesc').value.trim(),
     cat:document.getElementById('mCat').value,
     sub:document.getElementById('mSub')?document.getElementById('mSub').value:'',
-    bank:document.getElementById('mBank').value.trim(),
+    acc:accId, bank:bankName,
     dir:parseInt(document.querySelector('input[name=mdir]:checked').value),
     amt:parseNum(document.getElementById('mAmt').value)
   });
   save(); closeModal(); renderCuentas();
 }
 function delMove(who,id){ M().moves[who]=M().moves[who].filter(m=>m.id!==id); save(); renderCuentas(); }
+
+/* ---- transferencias entre cuentas ---- */
+function openTransferModal(){
+  const accs=db.config.accounts||[];
+  if(accs.length<2){ alert('Necesitas al menos dos cuentas para transferir. Crea otra en Configuración.'); return; }
+  const opts=sel=>accs.map(a=>`<option value="${a.id}"${a.id===sel?' selected':''}>${esc(a.name)}${a.cur==='USD'?' (USD)':''} · ${a.cur==='USD'?fmtUSD(accountBalance(a.id)):fmt(accountBalance(a.id))}</option>`).join('');
+  openModal(`
+    <div class="modal-h"><h3>Transferir entre cuentas</h3><button class="x" data-close>×</button></div>
+    <form onsubmit="saveTransfer(event)">
+      <div class="fld"><label>Desde (sale de)</label><select id="tFrom" onchange="updateTransferConv()">${opts(accs[0].id)}</select></div>
+      <div class="fld"><label>Hacia (entra a)</label><select id="tTo" onchange="updateTransferConv()">${opts(accs[1].id)}</select></div>
+      <div class="fld"><label id="tAmtLabel">Monto</label><input id="tAmt" inputmode="numeric" required placeholder="0"></div>
+      <div class="fld" id="tConvFld" hidden>
+        <label id="tConvLabel">¿Cuánto te quedó? (lo que dice el banco)</label>
+        <input id="tAmtDest" inputmode="numeric" placeholder="0">
+        <p class="hint">Como cambias de moneda, escribe el valor final que te cargó el banco.</p>
+      </div>
+      <div class="fld"><label>Fecha</label><input type="date" id="tDate" value="${today()}"></div>
+      <p class="hint">Solo mueve tu dinero de una cuenta a otra. No cuenta como gasto ni ingreso.</p>
+      <button type="submit" class="btn">Transferir</button>
+    </form>`);
+  updateTransferConv();
+}
+function updateTransferConv(){
+  const from=document.getElementById('tFrom').value, to=document.getElementById('tTo').value;
+  const cf=accCur(from), ct=accCur(to);
+  const conv=document.getElementById('tConvFld');
+  document.getElementById('tAmtLabel').textContent='Monto que sale'+(cf==='USD'?' (USD)':'');
+  if(cf!==ct){ conv.hidden=false; document.getElementById('tConvLabel').textContent='¿Cuánto te quedó en '+ct+'? (lo que dice el banco)'; }
+  else conv.hidden=true;
+}
+function saveTransfer(e){
+  e.preventDefault();
+  const from=document.getElementById('tFrom').value, to=document.getElementById('tTo').value;
+  const amt=parseNum(document.getElementById('tAmt').value);
+  if(from===to){ alert('Elige dos cuentas distintas.'); return; }
+  if(amt<=0){ alert('Escribe un monto válido.'); return; }
+  const cf=accCur(from), ct=accCur(to);
+  let amtDest=amt;
+  if(cf!==ct){ amtDest=parseNum(document.getElementById('tAmtDest').value); if(amtDest<=0){ alert('Escribe cuánto te quedó en '+ct+'.'); return; } }
+  M().transfers.push({id:uid(), from, to, amt, amtDest, date:document.getElementById('tDate').value});
+  save(); closeModal(); renderCuentas();
+}
 
 /* ============================================================
    ENTRE NOSOTROS (calculadora quién le debe a quién)
