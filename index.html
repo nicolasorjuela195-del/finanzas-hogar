@@ -381,6 +381,7 @@ const CATS=[
   {name:'Personal',subs:['Cabello','Uñas','Ropa','Salud','Cuidado personal','Otros']},
   {name:'Suscripciones',subs:['Streaming','Apps','Nube','Otros']},
   {name:'Mascotas',subs:['Comida y cuidado','Veterinario','Otros']},
+  {name:'Bebé',    subs:['Pañales','Ropa','Salud','Aseo','Comida','Otros']},
   {name:'Otros',   subs:['Otros']},
   {name:'Sueldo',  subs:['Salario','Bono','Otros ingresos']},
   {name:'Ahorro',  subs:['Fondo','Meta','Otros']},
@@ -390,7 +391,14 @@ const CATS=[
    Orden = prioridad (lo más específico primero). "exactas" usa límite de palabra
    para términos cortos que podrían colisionar (ara, gas, hm). */
 const CAT_DICT=[
-  // --- Mascotas (Lila y Max) primero, gana a "comida perros" ---
+  // --- Bebé (Matías) primero. Subcategoría por combinación (ropa matías, cita matías…) ---
+  [['pañales','panales','pañitos','panitos','pañalera','panalera','toallitas bebe'], ['Bebé','Pañales']],
+  [['ropa matias','ropa matías','ropa bebe','ropa bebé','body','bodies','enterizo','medias bebe','zapatos bebe','gorro bebe','camisa matias'], ['Bebé','Ropa']],
+  [['cita matias','cita matías','pediatra','vacuna matias','vacuna matías','control matias','crema pañal','crema bebe','medicina matias','medicamento matias','jarabe matias'], ['Bebé','Salud']],
+  [['shampoo bebe','shampoo matias','jabon bebe','jabón bebe','pañitos','panitos','aseo bebe','colonia bebe','talco bebe'], ['Bebé','Aseo']],
+  [['compota','leche matias','formula','fórmula','papilla','cereal bebe','comida matias'], ['Bebé','Comida']],
+  [['coche','cuna','tetero','biberon','biberón','chupo','chupete','babero','colico','cólico','gateador','juguete matias','juguete bebe','matias','matías','bebe','bebé','baby'], ['Bebé','Otros']],
+  // --- Mascotas (Lila y Max), gana a "comida perros" ---
   [['lila','perros','perro','gato','mascota','esterilizacion','castracion','guarderia perro','veterinario','vacuna max','vacuna lila','croquetas','concentrado','purina','dog chow','agility','bano perros','baño perros','juguete perro','cama perro','guayas','pipeta','desparasit','antipulgas','petys','laika','agropecuaria','veterinaria'], ['Mascotas','Comida y cuidado']],
   [['max','lila'], ['Mascotas','Comida y cuidado'], true],
   // --- Transporte específico (antes que Hogar/Servicios: gasolina antes que gas) ---
@@ -456,7 +464,7 @@ function blankDB(){
   return {
     config:{
       people:{a:{name:"Nico",salary:7500000}, b:{name:"Mari",salary:4400000}},
-      cards:[], cardLimits:{}, cardCuts:{},
+      cards:[], cardLimits:{}, cardCuts:{}, cardPayNext:{},
       fixedExpenses:[], savingGoals:[], accounts:[],
       categories:CATS.map(c=>c.name)
     },
@@ -502,7 +510,11 @@ function payMonthOf(dateISO, cardId){
   const d=new Date(dateISO+'T00:00:00');
   let corte=new Date(d.getFullYear(), d.getMonth(), cut);
   if(d > corte) corte=new Date(d.getFullYear(), d.getMonth()+1, cut); // pasó el corte de este mes
-  const pay=new Date(corte.getFullYear(), corte.getMonth()-1, 1);     // se paga con ingreso del mes anterior al corte
+  // Por defecto el pago se hace con el ingreso del mes ANTERIOR al corte.
+  // Si la tarjeta paga con el salario del mes SIGUIENTE (Lulo), el pago cae en el mes del corte.
+  const payNext=db.config.cardPayNext&&db.config.cardPayNext[cardId];
+  const offset=payNext?0:-1;
+  const pay=new Date(corte.getFullYear(), corte.getMonth()+offset, 1);
   return pay.getFullYear()+'-'+String(pay.getMonth()+1).padStart(2,'0');
 }
 
@@ -510,7 +522,7 @@ function normalizeDB(){
   if(!db.config) db.config=blankDB().config;
   const c=db.config;
   if(!c.people) c.people={a:{name:"Nico",salary:0},b:{name:"Mari",salary:0}};
-  if(!c.cards)c.cards=[]; if(!c.cardLimits)c.cardLimits={}; if(!c.cardCuts)c.cardCuts={};
+  if(!c.cards)c.cards=[]; if(!c.cardLimits)c.cardLimits={}; if(!c.cardCuts)c.cardCuts={}; if(!c.cardPayNext)c.cardPayNext={};
   if(!c.fixedExpenses)c.fixedExpenses=[]; if(!c.savingGoals)c.savingGoals=[]; if(!c.accounts)c.accounts=[];
   if(!c.categories||!c.categories.length)c.categories=blankDB().config.categories;
   if(!db.months)db.months={};
@@ -991,6 +1003,7 @@ function buyRows(){
         </div>
       </div>
       <div class="buy-amt">${fmt(b.amt)}</div>
+      <button class="buy-del" title="Editar" onclick="openBuyModal('${b.id}')" style="font-size:14px">✎</button>
       <button class="buy-del" title="Borrar" onclick="delBuy('${b.id}')">×</button>
     </div>`).join('');
 }
@@ -1070,7 +1083,7 @@ function accountsStrip(who){
 }
 function moveRow(m,who){
   const auto = m.auto ? ' <span class="tag cat">auto</span>' : '';
-  const del = m.auto ? '' : `<button class="buy-del" onclick="delMove('${who}','${m.id}')" title="Borrar">×</button>`;
+  const acts = m.auto ? '' : `<button class="buy-del" onclick="openMoveModal('${m.id}')" title="Editar" style="font-size:13px">✎</button> <button class="buy-del" onclick="delMove('${who}','${m.id}')" title="Borrar">×</button>`;
   return `<tr>
     <td style="font-weight:400;white-space:nowrap">${m.date?m.date.slice(8,10)+'/'+m.date.slice(5,7):'—'}</td>
     <td style="text-align:left;font-weight:600">${esc(m.desc)}${auto}</td>
@@ -1078,7 +1091,7 @@ function moveRow(m,who){
     <td style="text-align:left">${esc(m.bank||'')}</td>
     <td class="num" style="color:var(--ok)">${m.dir>0?fmt(m.amt):'—'}</td>
     <td class="num" style="color:var(--warn)">${m.dir<0?fmt(m.amt):'—'}</td>
-    <td>${del}</td>
+    <td style="white-space:nowrap">${acts}</td>
   </tr>`;
 }
 function setCuentasPerson(w){ cuentasPerson=w; renderCuentas(); }
@@ -1110,10 +1123,14 @@ function renderConfig(){
           </div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
             <span style="color:var(--ink-faint)">Cupo</span>
-            <input value="${limits[c.id]||''}" placeholder="0" inputmode="numeric" onchange="setCardLimit('${c.id}',this.value)" style="width:120px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
+            <input value="${limits[c.id]?limits[c.id].toLocaleString('es-CO'):''}" placeholder="0" inputmode="numeric" oninput="moneyInput(this)" onchange="setCardLimit('${c.id}',this.value)" style="width:120px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
             <span style="color:var(--ink-faint)">Corta el día</span>
             <input value="${(db.config.cardCuts||{})[c.id]||''}" placeholder="8" inputmode="numeric" onchange="setCardCut('${c.id}',this.value)" style="width:52px;padding:6px;text-align:center;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)">
           </div>
+          <label style="display:flex;align-items:center;gap:7px;margin-top:8px;font-size:12.5px;color:var(--ink-soft);cursor:pointer">
+            <input type="checkbox" ${(db.config.cardPayNext||{})[c.id]?'checked':''} onchange="setCardPayNext('${c.id}',this.checked)" style="width:auto">
+            Se paga con el salario del mes siguiente al corte
+          </label>
         </div>`).join('')}
         <button class="btn ghost sm" style="margin-top:12px" onclick="addCard()">+ Añadir tarjeta</button>
       </div>
@@ -1122,8 +1139,8 @@ function renderConfig(){
         <div class="cfg-card">
           <h3>Salarios</h3>
           <p class="desc">Los ingresos fijos. Aparecen cada mes; los ajustas si hay prima o bono desde el Resumen.</p>
-          <div class="fieldrow"><span class="fl"><span class="tag nico"><span class="d"></span>${esc(db.config.people.a.name)}</span></span><input value="${db.config.people.a.salary||''}" inputmode="numeric" onchange="setSalary('a',this.value)"></div>
-          <div class="fieldrow"><span class="fl"><span class="tag mari"><span class="d"></span>${esc(db.config.people.b.name)}</span></span><input value="${db.config.people.b.salary||''}" inputmode="numeric" onchange="setSalary('b',this.value)"></div>
+          <div class="fieldrow"><span class="fl"><span class="tag nico"><span class="d"></span>${esc(db.config.people.a.name)}</span></span><input value="${db.config.people.a.salary?db.config.people.a.salary.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setSalary('a',this.value)"></div>
+          <div class="fieldrow"><span class="fl"><span class="tag mari"><span class="d"></span>${esc(db.config.people.b.name)}</span></span><input value="${db.config.people.b.salary?db.config.people.b.salary.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setSalary('b',this.value)"></div>
           <div class="fieldrow"><span class="fl" style="font-weight:600;color:var(--ink)">Proporción</span><span style="font-weight:700">${esc(db.config.people.a.name)} ${Math.round(p.a*100)}% · ${esc(db.config.people.b.name)} ${Math.round(p.b*100)}%</span></div>
           <div style="margin-top:14px;display:flex;gap:8px">
             <input class="txt" style="flex:1;width:auto" id="nameA" value="${esc(db.config.people.a.name)}" onchange="setName('a',this.value)" placeholder="Nombre 1">
@@ -1137,7 +1154,7 @@ function renderConfig(){
           ${db.config.fixedExpenses.map(f=>`<div style="padding:12px 0;border-bottom:1px solid var(--line-soft)">
             <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
               <input class="txt" style="flex:1;width:auto" value="${esc(f.name)}" onchange="setFixedName('${f.id}',this.value)" placeholder="Nombre">
-              <input style="width:120px" value="${f.amt||''}" inputmode="numeric" onchange="setFixedAmt('${f.id}',this.value)" placeholder="valor">
+              <input style="width:120px" value="${f.amt?f.amt.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setFixedAmt('${f.id}',this.value)" placeholder="valor">
               <button class="del" onclick="delFixed('${f.id}')" title="Borrar">×</button>
             </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
@@ -1161,7 +1178,7 @@ function renderConfig(){
           ${db.config.savingGoals.map(g=>`<div class="fieldrow">
             <span class="fl"><input class="txt" value="${esc(g.name)}" onchange="setGoalName('${g.id}',this.value)"></span>
             <span style="display:flex;gap:6px;align-items:center">
-              <input value="${g.amt||''}" inputmode="numeric" onchange="setGoalAmt('${g.id}',this.value)">
+              <input value="${g.amt?g.amt.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setGoalAmt('${g.id}',this.value)">
               <button class="del" onclick="delGoal('${g.id}')" title="Borrar">×</button>
             </span>
           </div>`).join('')}
@@ -1187,7 +1204,7 @@ function renderConfig(){
                 <option value="USD"${a.cur==='USD'?' selected':''}>Dólares</option>
               </select>
               <span style="color:var(--ink-faint)">Saldo inicial</span>
-              <input value="${a.bal0||''}" inputmode="numeric" onchange="setAccBal0('${a.id}',this.value)" placeholder="0" style="width:110px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
+              <input value="${a.bal0?a.bal0.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setAccBal0('${a.id}',this.value)" placeholder="0" style="width:110px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
             </div>
           </div>`).join('')}
           <button class="btn ghost sm" style="margin-top:12px" onclick="addAccount()">+ Añadir cuenta</button>
@@ -1198,10 +1215,16 @@ function renderConfig(){
 
 /* ---- parseo de números (formato colombiano: puntos de miles) ---- */
 function parseNum(v){ if(v==null)return 0; return Math.round(parseFloat(String(v).replace(/[^\d,-]/g,'').replace(/\./g,'').replace(',','.'))||0); }
+/* formatea un input de dinero en vivo: puntos de miles mientras se escribe */
+function moneyInput(el){
+  const n=parseNum(el.value);
+  el.value = n>0 ? n.toLocaleString('es-CO') : '';
+}
 
 /* ---- acciones config ---- */
 function setCardLimit(id,v){ db.config.cardLimits[id]=parseNum(v); save(); renderConfig(); }
 function setCardCut(id,v){ const n=parseInt(String(v).replace(/\D/g,''))||0; db.config.cardCuts[id]=Math.min(31,Math.max(0,n)); save(); }
+function setCardPayNext(id,v){ db.config.cardPayNext[id]=!!v; save(); }
 function delCard(id){ if(!confirm('¿Borrar esta tarjeta?'))return; db.config.cards=db.config.cards.filter(c=>c.id!==id); delete db.config.cardLimits[id]; delete db.config.cardCuts[id]; save(); renderConfig(); }
 function addCard(){ const n=prompt('Nombre de la tarjeta:'); if(!n)return; db.config.cards.push({id:uid(),name:n.trim()}); save(); renderConfig(); }
 function setSalary(w,v){ db.config.people[w].salary=parseNum(v); save(); renderConfig(); }
@@ -1231,29 +1254,116 @@ function delAccount(id){ if(!confirm('¿Borrar esta cuenta?'))return; db.config.
    ============================================================ */
 const today=()=>new Date().toISOString().slice(0,10);
 
-/* ---- compra ---- */
-function openBuyModal(){
+/* ---- compra: una o varias, y edición ---- */
+let buyRowSeq=0;
+function openBuyModal(editId){
   if(!db.config.cards.length){ alert('Primero agrega una tarjeta en Configuración.'); return; }
-  const cards=db.config.cards.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('');
-  openModal(`
-    <div class="modal-h"><h3>Agregar compra</h3><button class="x" data-close>×</button></div>
-    <form onsubmit="saveBuy(event)">
-      <div class="fld"><label>¿Qué compraste?</label><input id="bDesc" required placeholder="Ej: Mercado D1" oninput="updateAutoCat('b')" autocomplete="off"></div>
-      <div class="fld-row">
-        <div class="fld"><label>Tarjeta</label><select id="bCard">${cards}</select></div>
-        <div class="fld"><label>Valor</label><input id="bAmt" inputmode="numeric" required placeholder="0"></div>
-      </div>
-      <div class="fld"><label>¿De quién es?</label>
-        <div class="choice">
-          <label><input type="radio" name="bwho" value="shared" checked><span>Ambos</span></label>
-          <label><input type="radio" name="bwho" value="a"><span>${esc(whoName('a'))}</span></label>
-          <label><input type="radio" name="bwho" value="b"><span>${esc(whoName('b'))}</span></label>
+  const cards=sel=>db.config.cards.map(c=>`<option value="${c.id}"${c.id===sel?' selected':''}>${esc(c.name)}</option>`).join('');
+  // modo edición
+  if(editId){
+    let buy=null; Object.values(db.months).forEach(mo=>{(mo.buys||[]).forEach(b=>{if(b.id===editId)buy=b;});});
+    if(!buy){ alert('No se encontró la compra.'); return; }
+    openModal(`
+      <div class="modal-h"><h3>Editar compra</h3><button class="x" data-close>×</button></div>
+      <form onsubmit="saveBuyEdit(event,'${editId}')">
+        <div class="fld"><label>¿Qué compraste?</label><input id="bDesc" required value="${esc(buy.desc)}" oninput="updateAutoCat('b')" autocomplete="off"></div>
+        <div class="fld-row">
+          <div class="fld"><label>Tarjeta</label><select id="bCard">${cards(buy.card)}</select></div>
+          <div class="fld"><label>Valor</label><input id="bAmt" inputmode="numeric" required value="${buy.amt?buy.amt.toLocaleString('es-CO'):''}" oninput="moneyInput(this)"></div>
         </div>
-      </div>
-      <div id="bCatBox">${catPickerHtml('b','','')}</div>
-      <div class="fld"><label>Fecha</label><input type="date" id="bDate" value="${today()}"></div>
-      <button type="submit" class="btn">Guardar compra</button>
+        <div class="fld"><label>¿De quién es?</label>
+          <div class="choice">
+            <label><input type="radio" name="bwho" value="shared"${buy.who==='shared'?' checked':''}><span>Ambos</span></label>
+            <label><input type="radio" name="bwho" value="a"${buy.who==='a'?' checked':''}><span>${esc(whoName('a'))}</span></label>
+            <label><input type="radio" name="bwho" value="b"${buy.who==='b'?' checked':''}><span>${esc(whoName('b'))}</span></label>
+          </div>
+        </div>
+        <div id="bCatBox">${catPickerHtml('b',buy.cat||'',buy.sub||'')}</div>
+        <div class="fld"><label>Fecha</label><input type="date" id="bDate" value="${buy.date||today()}"></div>
+        <button type="submit" class="btn">Guardar cambios</button>
+      </form>`);
+    return;
+  }
+  // modo agregar: una tarjeta, varias filas
+  openModal(`
+    <div class="modal-h"><h3>Agregar compras</h3><button class="x" data-close>×</button></div>
+    <form onsubmit="saveBuysMulti(event)">
+      <div class="fld"><label>Tarjeta (para todas)</label><select id="bCard">${cards()}</select></div>
+      <p class="hint" style="margin:0 0 10px">Agrega todas las compras de esta tarjeta de una vez. La categoría se detecta sola.</p>
+      <div id="buyRows"></div>
+      <button type="button" class="btn ghost sm" style="margin-top:4px" onclick="addBuyRow()">+ Otra compra</button>
+      <button type="submit" class="btn" style="margin-top:10px">Guardar compras</button>
     </form>`);
+  buyRowSeq=0; document.getElementById('buyRows').innerHTML=''; addBuyRow(); addBuyRow();
+}
+/* una fila de compra en modo múltiple */
+function addBuyRow(){
+  const i=buyRowSeq++;
+  const whoOpts=`<select id="rwho${i}" style="padding:8px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:var(--bg);color:var(--ink)">
+    <option value="shared">Ambos</option><option value="a">${esc(whoName('a'))}</option><option value="b">${esc(whoName('b'))}</option></select>`;
+  const row=document.createElement('div');
+  row.style.cssText='border:1px solid var(--line);border-radius:11px;padding:11px;margin-bottom:9px';
+  row.innerHTML=`
+    <div style="display:flex;gap:6px;margin-bottom:7px">
+      <input id="rdesc${i}" placeholder="Descripción" oninput="rowAuto(${i})" autocomplete="off" style="flex:1;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font-size:14px;background:var(--bg);color:var(--ink)">
+      <button type="button" onclick="this.closest('div[data-brow]').remove()" style="background:none;border:none;color:var(--ink-faint);font-size:18px;cursor:pointer">×</button>
+    </div>
+    <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+      <input id="ramt${i}" inputmode="numeric" placeholder="Valor" oninput="moneyInput(this)" style="width:110px;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:13px;text-align:right;background:var(--bg);color:var(--ink)">
+      <input type="date" id="rdate${i}" value="${today()}" style="padding:8px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:var(--bg);color:var(--ink)">
+      ${whoOpts}
+      <span id="rcat${i}" class="tag cat" style="font-size:11px">—</span>
+    </div>`;
+  row.setAttribute('data-brow','1'); row.dataset.i=i;
+  document.getElementById('buyRows').appendChild(row);
+}
+/* detección auto por fila */
+function rowAuto(i){
+  const desc=document.getElementById('rdesc'+i).value;
+  const hit=autoCat(desc);
+  const chip=document.getElementById('rcat'+i);
+  if(hit){ chip.textContent=hit.cat+' › '+hit.sub; chip.dataset.cat=hit.cat; chip.dataset.sub=hit.sub; }
+  else { chip.textContent='Otros'; chip.dataset.cat='Otros'; chip.dataset.sub='Otros'; }
+}
+function saveBuysMulti(e){
+  e.preventDefault();
+  const card=document.getElementById('bCard').value;
+  const rows=document.querySelectorAll('#buyRows [data-brow]');
+  let added=0;
+  rows.forEach(r=>{
+    const i=r.dataset.i;
+    const desc=document.getElementById('rdesc'+i).value.trim();
+    const amt=parseNum(document.getElementById('ramt'+i).value);
+    if(!desc || amt<=0) return;
+    const date=document.getElementById('rdate'+i).value||today();
+    const who=document.getElementById('rwho'+i).value;
+    const chip=document.getElementById('rcat'+i);
+    const cat=chip.dataset.cat||'Otros', sub=chip.dataset.sub||'Otros';
+    const buy={id:uid(),desc,card,amt,who,cat,sub,date};
+    M(payMonthOf(date,card)).buys.push(buy);
+    added++;
+  });
+  if(!added){ alert('Agrega al menos una compra con descripción y valor.'); return; }
+  save(); closeModal(); renderCompras();
+}
+function saveBuyEdit(e,id){
+  e.preventDefault();
+  let buy=null; Object.values(db.months).forEach(mo=>{(mo.buys||[]).forEach(b=>{if(b.id===id)buy=b;});});
+  if(!buy) return;
+  const newDate=document.getElementById('bDate').value;
+  const newCard=document.getElementById('bCard').value;
+  Object.assign(buy,{
+    desc:document.getElementById('bDesc').value.trim(),
+    card:newCard, amt:parseNum(document.getElementById('bAmt').value),
+    who:document.querySelector('input[name=bwho]:checked').value,
+    cat:document.getElementById('bCat').value,
+    sub:document.getElementById('bSub')?document.getElementById('bSub').value:'',
+    date:newDate
+  });
+  // reubicar la compra al mes de pago correcto si cambió la fecha/tarjeta
+  Object.values(db.months).forEach(mo=>{ if(mo.buys) mo.buys=mo.buys.filter(b=>b.id!==id); });
+  M(payMonthOf(newDate,newCard)).buys.push(buy);
+  save(); closeModal(); renderCompras();
 }
 /* caja de categoría con detección automática */
 function catPickerHtml(prefix, cat, sub){
@@ -1279,23 +1389,6 @@ function onCatChange(prefix){
   const cat=document.getElementById(prefix+'Cat').value;
   const sub=subsOf(cat)[0];
   document.getElementById(prefix+'CatBox').innerHTML=catPickerHtml(prefix,cat,sub);
-}
-function saveBuy(e){
-  e.preventDefault();
-  const who=document.querySelector('input[name=bwho]:checked').value;
-  const cat=document.getElementById('bCat')?document.getElementById('bCat').value:'Otros';
-  const sub=document.getElementById('bSub')?document.getElementById('bSub').value:'Otros';
-  const date=document.getElementById('bDate').value;
-  const buy={
-    id:uid(), desc:document.getElementById('bDesc').value.trim(),
-    card:document.getElementById('bCard').value,
-    amt:parseNum(document.getElementById('bAmt').value),
-    who, cat, sub, date
-  };
-  // guardar en el mes de pago que le corresponde según el corte de la tarjeta
-  const key=payMonthOf(date, buy.card);
-  M(key).buys.push(buy);
-  save(); closeModal(); renderCompras();
 }
 function delBuy(id){ Object.values(db.months).forEach(mo=>{ if(mo.buys) mo.buys=mo.buys.filter(b=>b.id!==id); }); save(); renderCompras(); }
 
@@ -1391,27 +1484,29 @@ function togglePay(cardId,who){
 }
 
 /* ---- movimiento propio ---- */
-function openMoveModal(){
+function openMoveModal(editId){
   const who=cuentasPerson;
-  const catOpts=CATS.map(c=>`<option value="${c.name}">${c.name}</option>`).join('');
+  let m=null;
+  if(editId){ (M().moves[who]||[]).forEach(x=>{if(x.id===editId)m=x;}); if(!m){alert('No se encontró el movimiento.');return;} }
+  const isEdit=!!m;
   openModal(`
-    <div class="modal-h"><h3>Movimiento de ${esc(whoName(who))}</h3><button class="x" data-close>×</button></div>
-    <form onsubmit="saveMove(event)">
+    <div class="modal-h"><h3>${isEdit?'Editar':''} Movimiento de ${esc(whoName(who))}</h3><button class="x" data-close>×</button></div>
+    <form onsubmit="saveMove(event${isEdit?",'"+editId+"'":''})">
       <div class="fld"><label>¿Entra o sale?</label>
         <div class="choice">
-          <label><input type="radio" name="mdir" value="-1" checked><span>Sale (gasto)</span></label>
-          <label><input type="radio" name="mdir" value="1"><span>Entra (ingreso)</span></label>
+          <label><input type="radio" name="mdir" value="-1"${(!m||m.dir<0)?' checked':''}><span>Sale (gasto)</span></label>
+          <label><input type="radio" name="mdir" value="1"${(m&&m.dir>0)?' checked':''}><span>Entra (ingreso)</span></label>
         </div>
       </div>
-      <div class="fld"><label>Descripción</label><input id="mDesc" required placeholder="Ej: Almuerzo" oninput="updateAutoCat('m')" autocomplete="off"></div>
+      <div class="fld"><label>Descripción</label><input id="mDesc" required value="${m?esc(m.desc):''}" placeholder="Ej: Almuerzo" oninput="updateAutoCat('m')" autocomplete="off"></div>
       <div class="fld-row">
-        <div class="fld"><label>Valor</label><input id="mAmt" inputmode="numeric" required placeholder="0"></div>
-        <div class="fld"><label>Fecha</label><input type="date" id="mDate" value="${today()}"></div>
+        <div class="fld"><label>Valor</label><input id="mAmt" inputmode="numeric" required value="${m&&m.amt?m.amt.toLocaleString('es-CO'):''}" placeholder="0" oninput="moneyInput(this)"></div>
+        <div class="fld"><label>Fecha</label><input type="date" id="mDate" value="${m?m.date:today()}"></div>
       </div>
-      <div id="mCatBox">${moveCatPicker('','')}</div>
-      <div class="fld"><label>¿De qué cuenta?</label>${accSelect('mAcc',who)}</div>
+      <div id="mCatBox">${moveCatPicker(m?m.cat:'',m?m.sub:'')}</div>
+      <div class="fld"><label>¿De qué cuenta?</label>${accSelect('mAcc',who,m?m.acc:'')}</div>
       <p class="hint">Afecta el saldo de esa cuenta. Para pasar plata a tus ahorros, usa el botón «Transferir».</p>
-      <button type="submit" class="btn">Guardar movimiento</button>
+      <button type="submit" class="btn">${isEdit?'Guardar cambios':'Guardar movimiento'}</button>
     </form>`);
 }
 /* selector de cuentas de una persona (sus propias + compartidas) */
@@ -1442,15 +1537,14 @@ updateAutoCat=function(prefix){
   }
   _updateAutoCat(prefix);
 };
-function saveMove(e){
+function saveMove(e,editId){
   e.preventDefault();
   const who=cuentasPerson;
   const accEl=document.getElementById('mAcc');
   const isSelect = accEl && accEl.tagName==='SELECT';
   const accId = isSelect ? accEl.value : null;
   const bankName = isSelect ? (accById(accId)||{}).name : (accEl?accEl.value.trim():'');
-  M().moves[who].push({
-    id:uid(), auto:false,
+  const data={
     date:document.getElementById('mDate').value,
     desc:document.getElementById('mDesc').value.trim(),
     cat:document.getElementById('mCat').value,
@@ -1458,7 +1552,13 @@ function saveMove(e){
     acc:accId, bank:bankName,
     dir:parseInt(document.querySelector('input[name=mdir]:checked').value),
     amt:parseNum(document.getElementById('mAmt').value)
-  });
+  };
+  if(editId){
+    const m=(M().moves[who]||[]).find(x=>x.id===editId);
+    if(m) Object.assign(m,data);
+  } else {
+    M().moves[who].push({id:uid(), auto:false, ...data});
+  }
   save(); closeModal(); renderCuentas();
 }
 function delMove(who,id){ M().moves[who]=M().moves[who].filter(m=>m.id!==id); save(); renderCuentas(); }
@@ -1473,10 +1573,10 @@ function openTransferModal(){
     <form onsubmit="saveTransfer(event)">
       <div class="fld"><label>Desde (sale de)</label><select id="tFrom" onchange="updateTransferConv()">${opts(accs[0].id)}</select></div>
       <div class="fld"><label>Hacia (entra a)</label><select id="tTo" onchange="updateTransferConv()">${opts(accs[1].id)}</select></div>
-      <div class="fld"><label id="tAmtLabel">Monto</label><input id="tAmt" inputmode="numeric" required placeholder="0"></div>
+      <div class="fld"><label id="tAmtLabel">Monto</label><input id="tAmt" inputmode="numeric" required placeholder="0" oninput="moneyInput(this)"></div>
       <div class="fld" id="tConvFld" hidden>
         <label id="tConvLabel">¿Cuánto te quedó? (lo que dice el banco)</label>
-        <input id="tAmtDest" inputmode="numeric" placeholder="0">
+        <input id="tAmtDest" inputmode="numeric" placeholder="0" oninput="moneyInput(this)">
         <p class="hint">Como cambias de moneda, escribe el valor final que te cargó el banco.</p>
       </div>
       <div class="fld"><label>Fecha</label><input type="date" id="tDate" value="${today()}"></div>
