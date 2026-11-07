@@ -599,6 +599,15 @@ function goalSavedThisMonth(g,key){
   return (ex&&ex.savings&&ex.savings[g.id])||0;
 }
 
+/* rendimiento mensual ESTIMADO de una cuenta de ahorro (informativo, no toca el saldo).
+   tasa mensual equivalente = (1+EA)^(1/12) − 1, aplicada sobre el saldo actual. */
+function monthlyYield(accId){
+  const a=accById(accId); if(!a||a.type!=='ahorro'||!a.ear||a.ear<=0) return 0;
+  const bal=accountBalance(accId);
+  const rMes=Math.pow(1+a.ear/100, 1/12)-1;
+  return bal*rMes;
+}
+
 /* ---- cuentas bancarias ---- */
 function accById(id){ return (db.config.accounts||[]).find(a=>a.id===id); }
 function accCur(id){ const a=accById(id); return a&&a.cur==='USD'?'USD':'COP'; }
@@ -1057,6 +1066,7 @@ function renderCuentas(){
         <p class="sub">El control de los movimientos propios de cada uno: lo que entra y lo que sale, día a día.</p>
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap">
+        ${(db.config.accounts||[]).some(a=>(a.who===who||a.who==='shared')&&a.type==='ahorro')?`<button class="btn ghost" onclick="openYieldModal()">💰 Rendimiento</button>`:''}
         <button class="btn ghost" onclick="openTransferModal()">⇄ Transferir</button>
         <button class="btn" onclick="openMoveModal()">+ Agregar movimiento</button>
       </div>
@@ -1092,10 +1102,17 @@ function accountsStrip(who){
     const bal=accountBalance(a.id);
     const cur=a.cur||'COP';
     const isShared=a.who==='shared';
+    const esAhorro=a.type==='ahorro';
+    const rendMes=(esAhorro&&a.ear>0&&cur!=='USD')?monthlyYield(a.id):0;
+    let foot;
+    if(cur==='USD') foot='en dólares';
+    else if(esAhorro&&rendMes>0) foot=`ahorro · rinde ~${fmt(rendMes).slice(1)}/mes`;
+    else if(esAhorro) foot='cuenta de ahorro';
+    else foot='saldo actual';
     return `<div class="stat" style="${cur==='USD'?'background:var(--nico-soft);border-color:var(--nico)':''}">
-      <div class="k" style="${cur==='USD'?'color:var(--nico-ink)':''}">${esc(a.name)}${isShared?' <span class="tag cat" style="font-size:10px">compartida</span>':''}</div>
+      <div class="k" style="${cur==='USD'?'color:var(--nico-ink)':''}">${esc(a.name)}${esAhorro?' 🔒':''}${isShared?' <span class="tag cat" style="font-size:10px">compartida</span>':''}</div>
       <div class="v sm num" style="${cur==='USD'?'color:var(--nico-ink)':(bal<0?'color:var(--warn)':'')}">${cur==='USD'?fmtUSD(bal):fmt(bal).slice(1)}</div>
-      <div class="foot" style="${cur==='USD'?'color:var(--nico-ink);opacity:.7':''}">${cur==='USD'?'en dólares':'saldo actual'}</div>
+      <div class="foot" style="${cur==='USD'?'color:var(--nico-ink);opacity:.7':''}">${esc(foot)}</div>
     </div>`;
   }).join('');
   return `<div class="hero-strip" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:16px">
@@ -1227,7 +1244,11 @@ function renderConfig(){
               <input class="txt" style="flex:1;width:auto" value="${esc(a.name)}" onchange="setAccName('${a.id}',this.value)" placeholder="Nombre">
               <button class="del" onclick="delAccount('${a.id}')" title="Borrar">×</button>
             </div>
-            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px;margin-bottom:8px">
+              <select onchange="setAccType('${a.id}',this.value)" style="padding:6px 9px;border:1px solid var(--line);border-radius:8px;font-size:12.5px;background:var(--bg);color:var(--ink)">
+                <option value="corriente"${(a.type||'corriente')==='corriente'?' selected':''}>Cuenta corriente</option>
+                <option value="ahorro"${a.type==='ahorro'?' selected':''}>Ahorro / Bóveda</option>
+              </select>
               <select onchange="setAccWho('${a.id}',this.value)" style="padding:6px 9px;border:1px solid var(--line);border-radius:8px;font-size:12.5px;background:var(--bg);color:var(--ink)">
                 <option value="a"${(a.who||'a')==='a'?' selected':''}>${esc(whoName('a'))}</option>
                 <option value="b"${a.who==='b'?' selected':''}>${esc(whoName('b'))}</option>
@@ -1237,9 +1258,14 @@ function renderConfig(){
                 <option value="COP"${(a.cur||'COP')==='COP'?' selected':''}>Pesos</option>
                 <option value="USD"${a.cur==='USD'?' selected':''}>Dólares</option>
               </select>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
               <span style="color:var(--ink-faint)">Saldo inicial</span>
               <input value="${a.bal0?a.bal0.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setAccBal0('${a.id}',this.value)" placeholder="0" style="width:110px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
+              ${a.type==='ahorro'?`<span style="color:var(--ink-faint)">Rentab. E.A.</span>
+              <input value="${a.ear||''}" inputmode="decimal" onchange="setAccEar('${a.id}',this.value)" placeholder="11" style="width:56px;padding:6px;text-align:center;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)"><span style="color:var(--ink-faint)">%</span>`:''}
             </div>
+            ${a.type==='ahorro'&&a.ear>0?`<p class="hint" style="margin:6px 0 0">Rinde ~${fmt(monthlyYield(a.id))} al mes (estimado sobre el saldo actual).</p>`:''}
           </div>`).join('')}
           <button class="btn ghost sm" style="margin-top:12px" onclick="addAccount()">+ Añadir cuenta</button>
         </div>
@@ -1276,7 +1302,9 @@ function setGoalAmt(id,v){ const g=db.config.savingGoals.find(x=>x.id===id); if(
 function setGoalAcc(id,v){ const g=db.config.savingGoals.find(x=>x.id===id); if(g){g.acc=v||null;save();renderConfig();} }
 function delGoal(id){ db.config.savingGoals=db.config.savingGoals.filter(g=>g.id!==id); save(); renderConfig(); }
 /* ---- cuentas bancarias (config) ---- */
-function addAccount(){ const n=prompt('Nombre de la cuenta/banco (ej: Bancolombia):'); if(!n)return; db.config.accounts.push({id:uid(),name:n.trim(),who:'a',cur:'COP',bal0:0}); save(); renderConfig(); }
+function addAccount(){ const n=prompt('Nombre de la cuenta/banco (ej: Bancolombia):'); if(!n)return; db.config.accounts.push({id:uid(),name:n.trim(),who:'a',cur:'COP',bal0:0,type:'corriente',ear:0}); save(); renderConfig(); }
+function setAccType(id,v){ const a=accById(id); if(a){a.type=v;save();renderConfig();} }
+function setAccEar(id,v){ const a=accById(id); if(a){a.ear=parseFloat(String(v).replace(',','.'))||0;save();renderConfig();} }
 function setAccName(id,v){ const a=accById(id); if(a){a.name=v.trim();save();} }
 function setAccWho(id,v){ const a=accById(id); if(a){a.who=v;save();renderConfig();} }
 function setAccCur(id,v){ const a=accById(id); if(a){a.cur=v;save();renderConfig();} }
@@ -1597,6 +1625,52 @@ function saveMove(e,editId){
   save(); closeModal(); renderCuentas();
 }
 function delMove(who,id){ M().moves[who]=M().moves[who].filter(m=>m.id!==id); save(); renderCuentas(); }
+
+/* ---- registrar rendimiento REAL de una cuenta de ahorro ---- */
+function openYieldModal(){
+  const who=cuentasPerson;
+  const accs=(db.config.accounts||[]).filter(a=>(a.who===who||a.who==='shared')&&a.type==='ahorro'&&(a.cur||'COP')!=='USD');
+  if(!accs.length){ alert('No tienes cuentas de ahorro en pesos. Crea una en Configuración (tipo: ahorro).'); return; }
+  const first=accs[0];
+  const est=first.ear>0?monthlyYield(first.id):0;
+  openModal(`
+    <div class="modal-h"><h3>Registrar rendimiento</h3><button class="x" data-close>×</button></div>
+    <form onsubmit="saveYield(event)">
+      <p class="hint" style="margin-top:0">Lo que <b>realmente</b> te rindió la cuenta este mes. Esto sube el saldo. (El «rinde ~X/mes» que ves es solo un estimado y no toca el saldo.)</p>
+      <div class="fld"><label>¿Qué cuenta de ahorro?</label>
+        <select id="yAcc" onchange="updateYieldHint()">${accs.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
+      </div>
+      <div class="fld-row">
+        <div class="fld"><label>Valor que rindió</label><input id="yAmt" inputmode="numeric" required placeholder="0" oninput="moneyInput(this)"></div>
+        <div class="fld"><label>Fecha</label><input type="date" id="yDate" value="${today()}"></div>
+      </div>
+      <p class="hint" id="yHint">${est>0?`Estimado de este mes para esta cuenta: ~${fmt(est)}`:''}</p>
+      <button type="submit" class="btn">Guardar rendimiento</button>
+    </form>`);
+}
+function updateYieldHint(){
+  const id=document.getElementById('yAcc').value;
+  const a=accById(id);
+  const est=(a&&a.ear>0)?monthlyYield(id):0;
+  document.getElementById('yHint').textContent= est>0?`Estimado de este mes para esta cuenta: ~${fmt(est)}`:'';
+}
+function saveYield(e){
+  e.preventDefault();
+  const who=cuentasPerson;
+  const accId=document.getElementById('yAcc').value;
+  const a=accById(accId);
+  const amt=parseNum(document.getElementById('yAmt').value);
+  if(!amt||amt<=0){ alert('Escribe el valor del rendimiento.'); return; }
+  M().moves[who].push({
+    id:uid(), auto:false, yield:true,
+    date:document.getElementById('yDate').value,
+    desc:'Rendimiento '+(a?a.name:''),
+    cat:'Sueldo', sub:'Otros ingresos',
+    acc:accId, bank:a?a.name:'',
+    dir:1, amt:amt
+  });
+  save(); closeModal(); renderCuentas();
+}
 
 /* ---- transferencias entre cuentas ---- */
 function openTransferModal(){
