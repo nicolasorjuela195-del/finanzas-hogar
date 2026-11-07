@@ -576,6 +576,29 @@ function findPay(cardId,who,key){
   return M(key).pays.find(x=>x.card===cardId && x.who===who);
 }
 
+/* ---- metas de ahorro ---- */
+/* progreso TOTAL de una meta: saldo de su cuenta asociada, o el registro manual acumulado */
+function goalReal(g,key){
+  if(g.acc) return accountBalance(g.acc);
+  // sin cuenta: suma de abonos manuales de todos los meses
+  let t=0; Object.values(db.months).forEach(mo=>{ if(mo.resumenExtra&&mo.resumenExtra.savings) t+=(mo.resumenExtra.savings[g.id]||0); });
+  return t;
+}
+/* lo abonado a la meta en UN mes (lo que resta del saldo de ese mes) */
+function goalSavedThisMonth(g,key){
+  key=key||curMonthKey;
+  if(g.acc){
+    // entradas a esa cuenta en ese mes: transferencias recibidas + movimientos de ingreso con categoría Ahorro
+    let t=0;
+    const mo=db.months[key]; if(!mo) return 0;
+    (mo.transfers||[]).forEach(tr=>{ if(tr.to===g.acc) t+=(tr.amtDest!==undefined?tr.amtDest:tr.amt); });
+    ['a','b'].forEach(w=>{ (mo.moves&&mo.moves[w]||[]).forEach(m=>{ if(m.acc===g.acc && m.dir>0 && m.cat==='Ahorro') t+=m.amt; }); });
+    return t;
+  }
+  const ex=(db.months[key]||{}).resumenExtra;
+  return (ex&&ex.savings&&ex.savings[g.id])||0;
+}
+
 /* ---- cuentas bancarias ---- */
 function accById(id){ return (db.config.accounts||[]).find(a=>a.id===id); }
 function accCur(id){ const a=accById(id); return a&&a.cur==='USD'?'USD':'COP'; }
@@ -785,7 +808,8 @@ function renderResumen(){
   // ahorros: metas y lo real del mes
   const goals=db.config.savingGoals;
   const goalTotal=goals.reduce((s,g)=>s+g.amt,0);
-  const savedReal=goals.reduce((s,g)=>s+((ex.savings&&ex.savings[g.id])||0),0);
+  // el "ahorro de este mes" (lo que resta del saldo mensual) = abonos del mes a metas
+  const savedReal=goals.reduce((s,g)=>s+goalSavedThisMonth(g,curMonthKey),0);
 
   const saldo=income-gastos-savedReal;
 
@@ -835,15 +859,17 @@ function renderResumen(){
         </div>
 
         <div class="panel">
-          <div class="panel-h"><h3>Ahorros · meta del mes</h3></div>
+          <div class="panel-h"><h3>Metas de ahorro</h3><span class="hint">progreso total</span></div>
           <div class="rows">
             ${goals.length?goals.map(g=>{
-              const real=(ex.savings&&ex.savings[g.id])||0;
+              const real=goalReal(g,curMonthKey);
               const pc=g.amt>0?Math.min(100,real/g.amt*100):0;
+              const mesAbono=goalSavedThisMonth(g,curMonthKey);
+              const accName=g.acc?(accById(g.acc)||{}).name:null;
               return `<div class="goal">
-                <div class="goal-top"><span class="gn">${esc(g.name)}</span><span class="gv">${fmt(real)} / ${fmt(g.amt)}</span></div>
+                <div class="goal-top"><span class="gn">${esc(g.name)}${accName?` <span class="tag cat" style="font-size:10px">${esc(accName)}</span>`:''}</span><span class="gv">${fmt(real)} / ${fmt(g.amt)}</span></div>
                 <div class="goal-bar"><i style="width:${pc}%"></i></div>
-                <div class="goal-sub">${Math.round(pc)}% de la meta${real<g.amt?` · faltan ${fmt(g.amt-real)}`:' · ¡completa! ✓'}</div>
+                <div class="goal-sub">${Math.round(pc)}% de la meta${real<g.amt?` · faltan ${fmt(g.amt-real)}`:' · ¡completa! ✓'}${mesAbono>0?` · +${fmt(mesAbono)} este mes`:''}</div>
               </div>`;
             }).join(''):'<div class="empty" style="padding:20px"><p>Configura tus metas de ahorro en Configuración.</p></div>'}
             ${goals.length?`<div class="row total"><span class="lab">Meta total</span><span class="val">${fmt(goalTotal)}</span></div>`:''}
@@ -1175,12 +1201,20 @@ function renderConfig(){
         <div class="cfg-card">
           <h3>Metas de ahorro</h3>
           <p class="desc">Lo que quieren ahorrar cada mes.</p>
-          ${db.config.savingGoals.map(g=>`<div class="fieldrow">
-            <span class="fl"><input class="txt" value="${esc(g.name)}" onchange="setGoalName('${g.id}',this.value)"></span>
-            <span style="display:flex;gap:6px;align-items:center">
-              <input value="${g.amt?g.amt.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setGoalAmt('${g.id}',this.value)">
+          ${db.config.savingGoals.map(g=>`<div style="padding:12px 0;border-bottom:1px solid var(--line-soft)">
+            <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
+              <input class="txt" style="flex:1;width:auto" value="${esc(g.name)}" onchange="setGoalName('${g.id}',this.value)" placeholder="Nombre de la meta">
+              <input style="width:120px" value="${g.amt?g.amt.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setGoalAmt('${g.id}',this.value)" placeholder="meta">
               <button class="del" onclick="delGoal('${g.id}')" title="Borrar">×</button>
-            </span>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
+              <span style="color:var(--ink-faint)">Dónde está el dinero:</span>
+              <select onchange="setGoalAcc('${g.id}',this.value)" style="padding:6px 9px;border:1px solid var(--line);border-radius:8px;font-size:12.5px;background:var(--bg);color:var(--ink)">
+                <option value="">— registro manual —</option>
+                ${(db.config.accounts||[]).map(a=>`<option value="${a.id}"${g.acc===a.id?' selected':''}>${esc(a.name)}</option>`).join('')}
+              </select>
+            </div>
+            ${g.acc?`<p class="hint" style="margin:6px 0 0">El progreso se toma del saldo de esa cuenta: ${fmt(accountBalance(g.acc))} de ${fmt(g.amt)}.</p>`:''}
           </div>`).join('')}
           <button class="btn ghost sm" style="margin-top:12px" onclick="addGoal()">+ Añadir meta</button>
         </div>
@@ -1239,6 +1273,7 @@ function delFixed(id){ db.config.fixedExpenses=db.config.fixedExpenses.filter(f=
 function addGoal(){ const n=prompt('Nombre de la meta de ahorro:'); if(!n)return; db.config.savingGoals.push({id:uid(),name:n.trim(),amt:0}); save(); renderConfig(); }
 function setGoalName(id,v){ const g=db.config.savingGoals.find(x=>x.id===id); if(g){g.name=v.trim();save();} }
 function setGoalAmt(id,v){ const g=db.config.savingGoals.find(x=>x.id===id); if(g){g.amt=parseNum(v);save();renderConfig();} }
+function setGoalAcc(id,v){ const g=db.config.savingGoals.find(x=>x.id===id); if(g){g.acc=v||null;save();renderConfig();} }
 function delGoal(id){ db.config.savingGoals=db.config.savingGoals.filter(g=>g.id!==id); save(); renderConfig(); }
 /* ---- cuentas bancarias (config) ---- */
 function addAccount(){ const n=prompt('Nombre de la cuenta/banco (ej: Bancolombia):'); if(!n)return; db.config.accounts.push({id:uid(),name:n.trim(),who:'a',cur:'COP',bal0:0}); save(); renderConfig(); }
