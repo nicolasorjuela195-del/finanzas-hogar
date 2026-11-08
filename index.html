@@ -104,6 +104,35 @@
   /* ===== shell ===== */
   .wrap{max-width:1120px;margin:0 auto;padding-block:26px 70px;padding-left:max(20px,env(safe-area-inset-left,0px));padding-right:max(20px,env(safe-area-inset-right,0px))}
   .view{display:none}
+  .sm-only{display:none}
+  html,body{max-width:100%;overflow-x:hidden}
+  .ptables>*,.res-cols>*,.hero-strip>*{min-width:0}
+  .settle-row{display:grid;grid-template-columns:1fr 104px 120px 30px;gap:8px;align-items:center;margin-bottom:8px}
+  .settle-row input,.settle-row select{min-width:0;width:100%}
+  @media (max-width:600px){
+    .wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
+    .settle-row{grid-template-columns:1fr 1fr 30px;padding-bottom:10px;border-bottom:1px solid var(--line-soft)}
+    .settle-row .s-concept{grid-column:1/-1}
+    table.fin{font-size:13px;min-width:0 !important}
+    table.fin th,table.fin td,table.fin tfoot td{padding:10px 8px}
+    table.fin th{font-size:9.5px;letter-spacing:.03em}
+    table.fin td{white-space:nowrap}
+    table.fin td:first-child{white-space:normal}
+    /* resumen de tarjetas: en celular se esconde la columna Cupo (queda Usado, Saldo y % Uso) */
+    table.t-sum th:nth-child(2),table.t-sum td:nth-child(2){display:none}
+    table.t-sum .bar-cell{display:none}
+    table.t-sum,table.t-person{font-size:11.5px}
+    table.t-sum th,table.t-sum td,table.t-person th,table.t-person td,table.t-person tfoot td{padding:10px 5px}
+    table.t-sum th:first-child,table.t-sum td:first-child,table.t-person th:first-child,table.t-person td:first-child{padding-left:12px}
+    table.t-sum th:last-child,table.t-sum td:last-child,table.t-person th:last-child,table.t-person td:last-child{padding-right:12px}
+    table.t-moves{min-width:560px !important}
+    table.t-person th:nth-child(2),table.t-person td:nth-child(2),table.t-person th:nth-child(3),table.t-person td:nth-child(3){display:none}
+    table.t-person{font-size:13.5px}
+    .sm-only{display:block}
+    .pt-detail{font-size:11px;font-weight:400;color:var(--ink-faint);margin-top:3px;white-space:nowrap}
+    .hero-strip{grid-template-columns:1fr !important}
+    .hero-strip.acc{grid-template-columns:1fr 1fr !important}
+  }
   .view.on{display:block;animation:fade .25s ease}
   @keyframes fade{from{opacity:0;transform:translateY(5px)}to{opacity:1;transform:none}}
   @media (prefers-reduced-motion:reduce){.view.on{animation:none}}
@@ -345,6 +374,9 @@ const CLAVE="casa2026";
 const ROW_ID=2; // espacio nuevo y limpio (la fila 1 guarda los datos viejos por si acaso)
 
 let sb=null, sbReady=false, saving=false, saveQueued=false, remoteApplying=false, saveTimer=null;
+/* cada dispositivo tiene su propio id: así ignoramos el 'eco' de nuestros propios guardados */
+const CLIENT_ID=Math.random().toString(36).slice(2)+Date.now().toString(36);
+let pushTimer=null, pendingRender=false;
 try{ sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY); sbReady=true; }catch(e){ console.error('Supabase no inició',e); }
 
 /* ============================================================
@@ -651,12 +683,18 @@ function save(){
   const b=document.getElementById('saveBadge');
   b.classList.add('show'); clearTimeout(saveTimer);
   saveTimer=setTimeout(()=>b.classList.remove('show'),1100);
-  if(sbReady && !remoteApplying) pushToCloud();
+  if(sbReady && !remoteApplying){ clearTimeout(pushTimer); pushTimer=setTimeout(pushToCloud,450); }
 }
+/* si se cierra o se esconde la app, guardar ya lo pendiente */
+function flushSave(){ if(pushTimer){ clearTimeout(pushTimer); pushTimer=null; pushToCloud(); } }
+document.addEventListener('visibilitychange',()=>{ if(document.visibilityState==='hidden') flushSave(); });
+window.addEventListener('pagehide',flushSave);
 async function pushToCloud(){
   if(saving){ saveQueued=true; return; }
+  pushTimer=null;
   saving=true; setSync('wait','Guardando…');
   try{
+    db._by=CLIENT_ID; db._rev=Date.now();
     const {error}=await sb.from('estado').upsert({id:ROW_ID,data:db,updated_at:new Date().toISOString()});
     if(error) throw error;
     setSync('','En línea');
@@ -679,20 +717,24 @@ async function startSync(){
   }catch(e){ console.error('[Cuentas] Error al conectar:',e); setSync('off','Sin conexión'); return; }
   sb.channel('estado-live').on('postgres_changes',
     {event:'*',schema:'public',table:'estado',filter:'id=eq.'+ROW_ID},
-    payload=>{ const nd=payload.new&&payload.new.data; if(nd&&(nd.config||nd.months)) applyRemote(nd); })
+    payload=>{ const nd=payload.new&&payload.new.data; if(!nd||!(nd.config||nd.months)) return; if(nd._by===CLIENT_ID) return; /* es nuestro propio guardado */ if(pushTimer||saving) return; /* tenemos cambios más nuevos por subir */ applyRemote(nd); })
     .subscribe();
 }
 function applyRemote(nd){
   remoteApplying=true;
   try{
     const migrated=migrateIfNeeded(nd);
-    db=migrated; normalizeDB(); renderAll();
+    db=migrated; normalizeDB();
+    if(isEditing()) pendingRender=true; else renderAll();
   }catch(e){
     console.error('[Cuentas] Error aplicando datos de la nube:',e);
     // no pisar lo que ya se ve; seguir con lo local
   }
   remoteApplying=false;
 }
+/* ¿el usuario está escribiendo en un campo? entonces no le borramos lo que escribe */
+function isEditing(){ const el=document.activeElement; return !!(el&&/^(INPUT|SELECT|TEXTAREA)$/.test(el.tagName)&&!el.closest('#lock')&&!el.closest('.modal')); }
+document.addEventListener('focusout',()=>setTimeout(()=>{ if(pendingRender&&!isEditing()){ pendingRender=false; renderAll(); } },60));
 /* Si llegan datos del formato VIEJO (people/cards/expenses planos), migrarlos */
 function migrateIfNeeded(nd){
   if(nd.config && nd.months) return nd; // ya es formato nuevo
@@ -945,7 +987,7 @@ function renderCompras(){
 
     ${cards.length?`
     <div class="table-wrap" style="margin-bottom:28px">
-      <table class="fin">
+      <table class="fin t-sum">
         <thead><tr><th>Tarjeta</th><th>Cupo</th><th>Usado</th><th>Saldo</th><th>% Uso</th></tr></thead>
         <tbody>${cardUseRows()}</tbody>
         <tfoot>${cardUseFoot()}</tfoot>
@@ -1003,7 +1045,7 @@ function personCardTable(who){
       chk=`<span class="pay-check" title="Marcar pagado" onclick="openPayModal('${c.id}','${who}')"></span>`;
     }
     return `<tr>
-      <td>${esc(c.name)}</td>
+      <td>${esc(c.name)}<span class="sm-only pt-detail">propio ${fmt(parts.propio)} · ambos ${fmt(parts.ambos)}</span></td>
       <td class="num">${parts.propio>0?fmt(parts.propio):'$0'}</td>
       <td class="num">${parts.ambos>0?fmt(parts.ambos):'$0'}</td>
       <td class="num" style="font-weight:600">${fmt(parts.total)}</td>
@@ -1014,10 +1056,10 @@ function personCardTable(who){
   db.config.cards.forEach(c=>{ const pr=cardPersonParts(c.id,who); tP+=pr.propio; tA+=pr.ambos; });
   return `<div>
     <div class="pt-head"><span class="tag ${whoClass(who)}"><span class="d"></span>${esc(whoName(who))} · ${Math.round((who==='a'?pct().a:pct().b)*100)}%</span></div>
-    <div class="table-wrap"><table class="fin" style="min-width:380px">
+    <div class="table-wrap"><table class="fin t-person" style="min-width:380px">
       <thead><tr><th>Tarjeta</th><th>Propio</th><th>Ambos</th><th>Total</th><th>Pago</th></tr></thead>
       <tbody>${rows}</tbody>
-      <tfoot><tr><td>Total</td><td class="num">${fmt(tP)}</td><td class="num">${fmt(tA)}</td><td class="num">${fmt(tP+tA)}</td><td></td></tr></tfoot>
+      <tfoot><tr><td>Total<span class="sm-only pt-detail">propio ${fmt(tP)} · ambos ${fmt(tA)}</span></td><td class="num">${fmt(tP)}</td><td class="num">${fmt(tA)}</td><td class="num">${fmt(tP+tA)}</td><td></td></tr></tfoot>
     </table></div>
   </div>`;
 }
@@ -1086,7 +1128,7 @@ function renderCuentas(){
     </div>
 
     <div class="block-label">Movimientos de ${esc(monthName(curMonthKey))}</div>
-    ${moves.length?`<div class="table-wrap"><table class="fin">
+    ${moves.length?`<div class="table-wrap"><table class="fin t-moves">
       <thead><tr><th>Fecha</th><th>Descripción</th><th>Categoría</th><th>Banco</th><th>Entra</th><th>Sale</th><th></th></tr></thead>
       <tbody>${moves.map(m=>moveRow(m,who)).join('')}</tbody>
     </table></div>`:'<div class="card"><div class="empty"><div class="ico">📒</div><p>Sin movimientos este mes. Pulsa «Agregar movimiento».</p></div></div>'}`;
@@ -1115,7 +1157,7 @@ function accountsStrip(who){
       <div class="foot" style="${cur==='USD'?'color:var(--nico-ink);opacity:.7':''}">${esc(foot)}</div>
     </div>`;
   }).join('');
-  return `<div class="hero-strip" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:16px">
+  return `<div class="hero-strip acc" style="grid-template-columns:repeat(auto-fit,minmax(150px,1fr));margin-bottom:16px">
     <div class="stat" style="background:var(--dark);border-color:var(--dark)">
       <div class="k" style="color:#b0a893">Saldo total (pesos)</div>
       <div class="v sm num" style="color:#fff">${fmt(totalCOP).slice(1)}</div>
@@ -1166,7 +1208,7 @@ function renderConfig(){
           </div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
             <span style="color:var(--ink-faint)">Cupo</span>
-            <input value="${limits[c.id]?limits[c.id].toLocaleString('es-CO'):''}" placeholder="0" inputmode="numeric" oninput="moneyInput(this)" onchange="setCardLimit('${c.id}',this.value)" style="width:120px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
+            <input value="${limits[c.id]?limits[c.id].toLocaleString('es-CO'):''}" placeholder="0" inputmode="numeric" oninput="moneyInput(this);setCardLimitQuiet('${c.id}',this.value)" onchange="setCardLimit('${c.id}',this.value)" style="width:120px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
             <span style="color:var(--ink-faint)">Corta el día</span>
             <input value="${(db.config.cardCuts||{})[c.id]||''}" placeholder="8" inputmode="numeric" onchange="setCardCut('${c.id}',this.value)" style="width:52px;padding:6px;text-align:center;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)">
           </div>
@@ -1283,6 +1325,7 @@ function moneyInput(el){
 
 /* ---- acciones config ---- */
 function setCardLimit(id,v){ db.config.cardLimits[id]=parseNum(v); save(); renderConfig(); }
+function setCardLimitQuiet(id,v){ db.config.cardLimits[id]=parseNum(v); save(); }
 function setCardCut(id,v){ const n=parseInt(String(v).replace(/\D/g,''))||0; db.config.cardCuts[id]=Math.min(31,Math.max(0,n)); save(); }
 function setCardPayNext(id,v){ db.config.cardPayNext[id]=!!v; save(); }
 function delCard(id){ if(!confirm('¿Borrar esta tarjeta?'))return; db.config.cards=db.config.cards.filter(c=>c.id!==id); delete db.config.cardLimits[id]; delete db.config.cardCuts[id]; save(); renderConfig(); }
@@ -1753,13 +1796,13 @@ function calcRowsHtml(){
         <button onclick="delSettle(${i})" title="Borrar cuando ya te pagó" style="background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:16px">×</button>
       </div>`;
     }
-    return `<div style="display:grid;grid-template-columns:1fr 104px 120px 30px;gap:8px;align-items:center;margin-bottom:8px">
-      <input value="${esc(r.concept||'')}" placeholder="Concepto" onchange="editSettle(${i},'concept',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:13.5px;background:var(--bg);color:var(--ink)">
+    return `<div class="settle-row">
+      <input class="s-concept" value="${esc(r.concept||'')}" placeholder="Concepto" onchange="editSettle(${i},'concept',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:13.5px;background:var(--bg);color:var(--ink)">
       <select onchange="editSettle(${i},'who',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:13.5px;background:var(--bg);color:var(--ink)">
         <option value="a"${r.who==='a'?' selected':''}>${esc(whoName('a'))}</option>
         <option value="b"${r.who==='b'?' selected':''}>${esc(whoName('b'))}</option>
       </select>
-      <input inputmode="numeric" value="${r.amt||''}" placeholder="Valor" onchange="editSettle(${i},'amt',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:13.5px;background:var(--bg);color:var(--ink);text-align:right;font-variant-numeric:tabular-nums">
+      <input inputmode="numeric" value="${r.amt?r.amt.toLocaleString('es-CO'):''}" placeholder="Valor" oninput="moneyInput(this)" onchange="editSettle(${i},'amt',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:13.5px;background:var(--bg);color:var(--ink);text-align:right;font-variant-numeric:tabular-nums">
       <button onclick="delSettle(${i})" style="background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:16px">×</button>
     </div>`;
   }).join('');
