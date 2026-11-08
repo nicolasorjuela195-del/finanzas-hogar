@@ -409,7 +409,8 @@ try{ sb=window.supabase.createClient(SUPABASE_URL,SUPABASE_KEY); sbReady=true; }
 const CATS=[
   {name:'Hogar',   subs:['Mercado','Arriendo','Servicios','Cosas de casa','Otros']},
   {name:'Comida',  subs:['Restaurantes','Domicilios','Café y antojos','Otros']},
-  {name:'Transporte',subs:['Gasolina','Uber y taxi','Parqueaderos','Carro','Otros']},
+  {name:'Carro',   subs:['Cuota crédito','Seguro','Impuestos y trámites','Mantenimiento','Accesorios','Gasolina y carga','Peajes y parqueo','Lavado','Otros']},
+  {name:'Transporte',subs:['Uber y taxi','Transporte público','Otros']},
   {name:'Personal',subs:['Cabello','Uñas','Ropa','Salud','Cuidado personal','Otros']},
   {name:'Suscripciones',subs:['Streaming','Apps','Nube','Otros']},
   {name:'Mascotas',subs:['Comida y cuidado','Veterinario','Otros']},
@@ -434,10 +435,9 @@ const CAT_DICT=[
   [['lila','perros','perro','gato','mascota','esterilizacion','castracion','guarderia perro','veterinario','vacuna max','vacuna lila','croquetas','concentrado','purina','dog chow','agility','bano perros','baño perros','juguete perro','cama perro','guayas','pipeta','desparasit','antipulgas','petys','laika','agropecuaria','veterinaria'], ['Mascotas','Comida y cuidado']],
   [['max','lila'], ['Mascotas','Comida y cuidado'], true],
   // --- Transporte específico (antes que Hogar/Servicios: gasolina antes que gas) ---
-  [['gasolina','combustible','terpel','texaco','biomax','primax'], ['Transporte','Gasolina']],
-  [['uber','didi','cabify','indriver','taxi','beat','sitp','transmilenio','pasaje','bus'], ['Transporte','Uber y taxi']],
-  [['parqueadero','parking','parqueo','valet'], ['Transporte','Parqueaderos']],
-  [['cuota carro','arreglo carro','lavado carro','lavado','peaje','corferias','tecnomecanica','soat','revision tecno','llantas','taller','mecanico','aceite carro','montallantas','polarizado'], ['Transporte','Carro']],
+  // (todo lo del carro se resuelve antes, en carCat)
+  [['uber','didi','cabify','indriver','taxi','beat'], ['Transporte','Uber y taxi']],
+  [['sitp','transmilenio','pasaje','bus','tullave','tu llave'], ['Transporte','Transporte público']],
   // --- Suscripciones (categoría propia) · solo términos EXPLÍCITOS, no rappi/amazon ---
   [['netflix','spotify','disney','hbo','max stream','prime video','youtube premium','paramount','star plus','crunchyroll','deezer'], ['Suscripciones','Streaming']],
   [['icloud','apple one','google one','drive','dropbox','onedrive','almacenamiento nube'], ['Suscripciones','Nube']],
@@ -476,9 +476,37 @@ const CAT_DICT=[
 ];
 /* quita acentos y pasa a minúsculas */
 function norm(s){ return (s||'').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g,''); }
+/* ============ CARRO ============
+   Si la descripción nombra el carro (Deepal, S05, Deepi, carro…) TODO va a Carro,
+   aunque diga Temu, Amazon o seguro. La subcategoría sale de las demás palabras. */
+const CAR_WORDS=['carro','vehiculo','deepal','s05','ds05','deepi','changan','ford','fiesta','camioneta'];
+/* palabras que por sí solas ya son del carro (sin decir "carro") */
+const CAR_SOLO=['soat','tecnomecanica','revision tecno','impuesto vehicular','fotomulta','comparendo','polarizado','ppf','peaje','parqueadero','parking','parqueo','valet','gasolina','combustible','tanqueo','tanquear','terpel','texaco','primax','biomax','electrolinera','montallantas','llantas','taller','mecanico','lavadero','polichado','corferias'];
+const CAR_SUBS=[
+  ['Seguro',              ['seguro','poliza','sura','bolivar','allianz','mapfre','axa','liberty','hdi','equidad']],
+  ['Impuestos y trámites',['impuesto','soat','tecnomecanica','revision tecno','multa','fotomulta','comparendo','matricula','traspaso','runt','placa','transito','pico y placa']],
+  ['Accesorios',          ['accesorio','tapete','forro','ppf','polarizado','lamina','pelicula','cargador','soporte','organizador','protector','cubre','ceramic','rin','rines','luces','led','dashcam','camara','ambientador','alarma','parasol','portaequipaje','baul','kit','temu','amazon','aliexpress','mercado libre','mercadolibre']],
+  ['Mantenimiento',       ['taller','mecanico','aceite','llanta','montallantas','mantenimiento','revision','frenos','bateria','alineacion','balanceo','repuesto','arreglo','latoneria','pintura','concesionario','garantia']],
+  ['Gasolina y carga',    ['gasolina','combustible','tanqueo','tanquear','terpel','texaco','primax','biomax','esso','mobil','electrolinera','carga electrica','recarga']],
+  ['Peajes y parqueo',    ['peaje','parqueadero','parking','parqueo','valet','corferias']],
+  ['Lavado',              ['lavado','lavadero','polichado','brillado']],
+  ['Cuota crédito',       ['cuota','credito','financiacion','prestamo','abono','leasing']]
+];
+function hasWord(d,w){ return new RegExp('(^|[^a-z0-9])'+w.replace(/[.*+?^${}()|[\]\\]/g,'\\$&')+'([^a-z0-9]|$)').test(d); }
+function carCat(d){
+  // cosas de Matías (ej. "silla carro matías") siguen siendo de Bebé
+  if(['matias','bebe','baby'].some(w=>hasWord(d,w))) return null;
+  const nombraCarro=CAR_WORDS.some(w=>hasWord(d,w));
+  if(!nombraCarro && !CAR_SOLO.some(w=>d.includes(w))) return null;
+  for(const [sub,keys] of CAR_SUBS){ if(keys.some(k=>d.includes(k))) return {cat:'Carro',sub}; }
+  // solo dice el nombre del carro ("Deepal", "Cuota Deepi") → la cuota del crédito
+  let resto=d; CAR_WORDS.forEach(w=>{ resto=resto.replace(new RegExp('(^|[^a-z0-9])'+w+'(?=[^a-z0-9]|$)','g'),' '); });
+  return {cat:'Carro', sub: resto.replace(/[^a-z]/g,'').length===0 ? 'Cuota crédito' : 'Otros'};
+}
 /* deduce [categoría, subcategoría] de una descripción; null si no encuentra */
 function autoCat(desc){
   const d=norm(desc);
+  const car=carCat(d); if(car) return car;
   for(const entry of CAT_DICT){
     const keys=entry[0], cs=entry[1], exact=entry[2];
     for(const k of keys){
@@ -558,6 +586,21 @@ function normalizeDB(){
   if(!c.fixedExpenses)c.fixedExpenses=[]; if(!c.savingGoals)c.savingGoals=[]; if(!c.accounts)c.accounts=[];
   if(!c.categories||!c.categories.length)c.categories=blankDB().config.categories;
   if(!db.months)db.months={};
+  migrateCarCats();
+}
+/* compras viejas que estaban en Transporte › Gasolina / Parqueaderos / Carro pasan a la categoría Carro */
+function migrateCarCats(){
+  const fix=x=>{
+    if(!x||x.cat!=='Transporte') return;
+    if(x.sub==='Gasolina'){ x.cat='Carro'; x.sub='Gasolina y carga'; }
+    else if(x.sub==='Parqueaderos'){ x.cat='Carro'; x.sub='Peajes y parqueo'; }
+    else if(x.sub==='Carro'){ const h=carCat(norm(x.desc)); x.cat='Carro'; x.sub=h?h.sub:'Otros'; }
+  };
+  Object.values(db.months).forEach(mo=>{
+    (mo.buys||[]).forEach(fix);
+    if(mo.moves){ (mo.moves.a||[]).forEach(fix); (mo.moves.b||[]).forEach(fix); }
+  });
+  (db.config.fixedExpenses||[]).forEach(fix);
 }
 
 /* ---- utilidades ---- */
