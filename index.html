@@ -105,6 +105,25 @@
   .wrap{max-width:1120px;margin:0 auto;padding-block:26px 70px;padding-left:max(20px,env(safe-area-inset-left,0px));padding-right:max(20px,env(safe-area-inset-right,0px))}
   .view{display:none}
   .sm-only{display:none}
+  .sema{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:12px}
+  .sema-c{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-sm);padding:14px 16px;box-shadow:var(--shadow)}
+  .sema-c .top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
+  .sema-c .nm{font-weight:600;font-size:14px}
+  .sema-c .pill{font-size:11px;font-weight:600;border-radius:999px;padding:2px 9px;white-space:nowrap}
+  .sema-c .amt{font-size:13px;color:var(--ink-soft);font-variant-numeric:tabular-nums}
+  .sema-c .amt b{color:var(--ink);font-size:16px}
+  .sema-bar{height:8px;border-radius:5px;background:var(--line-soft);overflow:hidden;margin:9px 0 7px;position:relative}
+  .sema-bar i{display:block;height:100%;border-radius:5px}
+  .sema-c .ft{font-size:12px}
+  .sema-total{display:flex;justify-content:space-between;flex-wrap:wrap;gap:6px;font-size:13px;color:var(--ink-soft);margin:0 0 26px}
+  .sema-total b{color:var(--ink)}
+  .lvl-ok{color:var(--ok)} .lvl-mid{color:var(--amber)} .lvl-over{color:var(--warn)}
+  .pill.lvl-ok{background:var(--nico-soft)} .pill.lvl-mid{background:var(--ambos-soft)} .pill.lvl-over{background:var(--warn-soft)}
+  .budget-hint{border-radius:10px;padding:9px 12px;font-size:13px;margin:0 0 12px;border:1px solid var(--line);background:var(--surface-2)}
+  .fchips{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;margin-bottom:10px;-webkit-overflow-scrolling:touch}
+  .fchip{flex:0 0 auto;border:1px solid var(--line);background:var(--surface,transparent);color:var(--ink);border-radius:999px;padding:7px 13px;font:inherit;font-size:13px;cursor:pointer;white-space:nowrap}
+  .fchip.on{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+  .fchip-n{opacity:.6;font-size:11.5px;margin-left:3px}
   html,body{max-width:100%;overflow-x:hidden}
   .ptables>*,.res-cols>*,.hero-strip>*{min-width:0}
   .settle-row{display:grid;grid-template-columns:1fr 104px 120px 30px;gap:8px;align-items:center;margin-bottom:8px}
@@ -418,7 +437,7 @@ const CATS=[
   {name:'Otros',   subs:['Otros']},
   {name:'Sueldo',  subs:['Salario','Bono','Otros ingresos']},
   {name:'Ahorro',  subs:['Fondo','Meta','Otros']},
-  {name:'Pago tarjeta', subs:['Pago tarjeta']}
+  {name:'Pago tarjeta', subs:['Pago tarjeta','Intereses y cargos']}
 ];
 /* diccionario: [palabras, [categoría, subcategoría], exactas?]
    Orden = prioridad (lo más específico primero). "exactas" usa límite de palabra
@@ -518,6 +537,16 @@ function autoCat(desc){
   }
   return null;
 }
+/* En una COMPRA de tarjeta nada es ingreso: "Intereses corriente" es un cobro del banco, no plata que entra */
+function buyAutoCat(desc){
+  const h=autoCat(desc); if(!h) return null;
+  if(h.cat==='Sueldo'||h.cat==='Ahorro'||(h.cat==='Pago tarjeta'&&h.sub==='Pago tarjeta')) return {cat:'Pago tarjeta',sub:'Intereses y cargos'};
+  return h;
+}
+/* devoluciones: restan en vez de sumar */
+/* devoluciones: SOLO restan si ustedes la marcan ("Ya me devolvieron este valor").
+   La palabra "devolución" en la descripción no cambia nada: puede ser un cobro aún sin devolver. */
+function signedAmt(isRef,amt){ amt=Math.abs(amt||0); return isRef?-amt:amt; }
 function subsOf(catName){ const c=CATS.find(x=>x.name===catName); return c?c.subs:['Otros']; }
 
 function blankDB(){
@@ -536,6 +565,7 @@ let curMonthKey = ymKey(new Date());
 let curView="resumen";
 let cuentasPerson="a";       // persona activa en pestaña Cuentas
 let comprasPerson="all";     // filtro persona en Compras
+let comprasCard="all";       // filtro tarjeta en la lista de Compras
 
 /* ---- helpers de mes ---- */
 function ymKey(d){ return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0"); }
@@ -585,6 +615,8 @@ function normalizeDB(){
   if(!c.cards)c.cards=[]; if(!c.cardLimits)c.cardLimits={}; if(!c.cardCuts)c.cardCuts={}; if(!c.cardPayNext)c.cardPayNext={};
   if(!c.fixedExpenses)c.fixedExpenses=[]; if(!c.savingGoals)c.savingGoals=[]; if(!c.accounts)c.accounts=[];
   if(!c.categories||!c.categories.length)c.categories=blankDB().config.categories;
+  if(!c.cardBudget) c.cardBudget={on:true, from:'2026-12', max:1000000, pctSmall:50, custom:{}};
+  if(!c.cardBudget.custom) c.cardBudget.custom={};
   if(!db.months)db.months={};
   migrateCarCats();
 }
@@ -601,12 +633,18 @@ function migrateCarCats(){
     if(mo.moves){ (mo.moves.a||[]).forEach(fix); (mo.moves.b||[]).forEach(fix); }
   });
   (db.config.fixedExpenses||[]).forEach(fix);
+  // compras ya guardadas: devoluciones en positivo → negativas; intereses marcados como ingreso → cargo del banco
+  Object.values(db.months).forEach(mo=>(mo.buys||[]).forEach(b=>{
+    // reparar: una versión anterior volvió negativas compras por la palabra "devolución". Sin marca explícita, vuelven a ser gasto.
+    if(b.amt<0 && !b.refund) b.amt=-b.amt;
+    if(b.cat==='Sueldo'||b.cat==='Ahorro'){ b.cat='Pago tarjeta'; b.sub='Intereses y cargos'; }
+  }));
 }
 
 /* ---- utilidades ---- */
 const uid=()=>Math.random().toString(36).slice(2,9);
 function esc(s){return String(s==null?"":s).replace(/[&<>"]/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[m]));}
-function fmt(n){ n=Math.round(n||0); return "$"+n.toLocaleString("es-CO"); }
+function fmt(n){ n=Math.round((n||0)*100)/100; const d=Number.isInteger(n)?0:2; return "$"+n.toLocaleString("es-CO",{minimumFractionDigits:d,maximumFractionDigits:2}); }
 function fmtUSD(n){ return "US$"+(n||0).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2}); }
 function whoName(w){ return w==="a"?db.config.people.a.name : w==="b"?db.config.people.b.name : "Ambos"; }
 function whoClass(w){ return w==="a"?"nico":w==="b"?"mari":"ambos"; }
@@ -632,6 +670,67 @@ function buysForMonth(key){
   return out;
 }
 /* Usado de una tarjeta en el mes de pago `key` */
+/* ============ SEMÁFORO DE TARJETAS ============
+   Tope por tarjeta para cada mes (ciclo de corte):
+   - cupo mayor al tope máximo (1.000.000) → tope = 1.000.000
+   - cupo igual o menor → tope = la mitad del cupo (50 %)
+   - sin cupo → tope máximo
+   - o un tope propio que pongan a mano en Configuración */
+function cb(){ return db.config.cardBudget||{on:false,custom:{}}; }
+function cardTope(cardId){
+  const B=cb(), own=(B.custom||{})[cardId];
+  if(own>0) return own;
+  const lim=(db.config.cardLimits||{})[cardId]||0, max=B.max||1000000;
+  if(lim<=0) return max;
+  if(lim>max) return max;
+  return Math.round(lim*(B.pctSmall||50)/100);
+}
+function budgetActive(key){ const B=cb(); return !!B.on && (key||curMonthKey)>=(B.from||'0000-00'); }
+function budgetLevel(used,tope){ const r=tope>0?used/tope:0; return r>1?'over':r>=0.7?'mid':'ok'; }
+function levelColor(l){ return l==='over'?'var(--warn)':l==='mid'?'var(--amber)':'var(--ok)'; }
+function levelLabel(l){ return l==='over'?'Se pasó':l==='mid'?'Cuidado':'Bien'; }
+/* tarjetas del semáforo (las que tienen compras o cupo) */
+function semaCards(key){ return db.config.cards.filter(c=>cardUsed(c.id,key)>0 || ((db.config.cardLimits||{})[c.id]||0)>0); }
+function semaforoHtml(key){
+  const B=cb(); if(!B.on||!db.config.cards.length) return '';
+  key=key||curMonthKey;
+  const active=budgetActive(key);
+  const list=semaCards(key);
+  if(!list.length) return '';
+  let tU=0,tT=0;
+  const cardsH=list.map(c=>{
+    const used=cardUsed(c.id,key), tope=cardTope(c.id); tU+=used; tT+=tope;
+    const l=budgetLevel(used,tope), pc=tope>0?used/tope*100:0, rest=tope-used;
+    return `<div class="sema-c">
+      <div class="top"><span class="nm">${esc(c.name)}</span><span class="pill lvl-${l}">${levelLabel(l)} · ${Math.round(pc)}%</span></div>
+      <div class="amt"><b>${fmt(used)}</b> de ${fmt(tope)}</div>
+      <div class="sema-bar"><i style="width:${Math.min(100,pc)}%;background:${levelColor(l)}"></i></div>
+      <div class="ft lvl-${l}">${rest>=0?`Te quedan <b>${fmt(rest)}</b>`:`Te pasaste <b>${fmt(-rest)}</b>`}</div>
+    </div>`;
+  }).join('');
+  const lt=budgetLevel(tU,tT);
+  return `<div class="block-label">Semáforo de tarjetas ${active?'':`<span class="tag cat" style="font-size:10.5px;letter-spacing:0;text-transform:none">vista previa · arranca en ${esc(monthName(B.from))}</span>`}</div>
+    <div class="sema">${cardsH}</div>
+    <div class="sema-total"><span>Entre todas: <b>${fmt(tU)}</b> de <b>${fmt(tT)}</b> permitido</span><span class="lvl-${lt}">${tT-tU>=0?`Quedan ${fmt(tT-tU)} para el mes`:`Pasados por ${fmt(tU-tT)}`}</span></div>`;
+}
+/* aviso en "Agregar compras": cómo queda la tarjeta con lo que estás anotando */
+function updateBudgetHint(){
+  const box=document.getElementById('budgetHint'); if(!box) return;
+  const B=cb(); if(!B.on){ box.style.display='none'; return; }
+  const card=document.getElementById('bCard').value;
+  const add={};
+  document.querySelectorAll('#buyRows [data-brow]').forEach(r=>{
+    const i=r.dataset.i, amt=parseNum(document.getElementById('ramt'+i).value);
+    if(amt>0){ const k=payMonthOf(document.getElementById('rdate'+i).value||today(),card); add[k]=(add[k]||0)+amt; }
+  });
+  const keys=Object.keys(add).length?Object.keys(add).sort():[payMonthOf(today(),card)];
+  const c=db.config.cards.find(x=>x.id===card); const tope=cardTope(card);
+  box.innerHTML=keys.map(k=>{
+    const used=cardUsed(card,k), nuevo=used+(add[k]||0), l=budgetLevel(nuevo,tope), rest=tope-nuevo;
+    return `<div><b>${esc(c?c.name:'')}</b> · ${esc(monthName(k))}${budgetActive(k)?'':' <span style="color:var(--ink-faint)">(vista previa)</span>'}: ${add[k]?'con estas compras queda en':'lleva'} <b class="lvl-${l}">${fmt(nuevo)}</b> de ${fmt(tope)} — <span class="lvl-${l}">${rest>=0?'quedan '+fmt(rest):'te pasas por '+fmt(-rest)}</span>${l==='over'?' ⚠️':''}</div>`;
+  }).join('');
+  box.style.display='block';
+}
 function cardUsed(cardId,key){
   return buysForMonth(key).filter(b=>b.card===cardId).reduce((s,b)=>s+b.amt,0);
 }
@@ -895,7 +994,7 @@ function saveBuyDraft(){
   const box=document.getElementById('buyRows'); if(!box) return;
   const rows=[...box.querySelectorAll('[data-brow]')].map(r=>{ const i=r.dataset.i; return {
     desc:document.getElementById('rdesc'+i).value, amt:document.getElementById('ramt'+i).value,
-    date:document.getElementById('rdate'+i).value, who:document.getElementById('rwho'+i).value }; });
+    date:document.getElementById('rdate'+i).value, who:document.getElementById('rwho'+i).value, ref:!!document.getElementById('rref'+i).checked }; });
   const draft={card:document.getElementById('bCard').value, rows};
   try{ if(rows.some(r=>r.desc.trim()||r.amt.trim())) localStorage.setItem(BUY_DRAFT_KEY,JSON.stringify(draft)); else localStorage.removeItem(BUY_DRAFT_KEY); }catch(_){}
 }
@@ -951,6 +1050,8 @@ function renderResumen(){
       <div class="stat"><div class="k">Ingresos</div><div class="v sm num" style="color:var(--ok)">${fmt(income).slice(1)}</div><div class="foot">salarios del hogar</div></div>
       <div class="stat"><div class="k">Gastos</div><div class="v sm num">${fmt(gastos).slice(1)}</div><div class="foot">fijos + ${monthBuys.length} compras</div></div>
     </div>
+
+    ${semaforoHtml(curMonthKey)}
 
     <div class="res-cols">
       <div style="display:flex;flex-direction:column;gap:20px">
@@ -1052,6 +1153,8 @@ function renderCompras(){
       <button class="btn" onclick="openBuyModal()">+ Agregar compra</button>
     </div>
 
+    ${semaforoHtml(curMonthKey)}
+
     ${cards.length?`
     <div class="table-wrap" style="margin-bottom:28px">
       <table class="fin t-sum">
@@ -1068,7 +1171,8 @@ function renderCompras(){
     </div>
     `:'<div class="card"><div class="empty"><div class="ico">💳</div><p>Aún no hay tarjetas. Agrégalas en Configuración.</p></div></div>'}
 
-    <div class="block-label">Compras de ${esc(monthName(curMonthKey))} · ${buysForMonth(curMonthKey).length} ${buysForMonth(curMonthKey).length===1?'registro':'registros'}</div>
+    <div class="block-label">Compras de ${esc(monthName(curMonthKey))}</div>
+    ${cardFilterHtml()}
     <div class="buy-list">${buyRows()}</div>`;
 }
 
@@ -1131,8 +1235,21 @@ function personCardTable(who){
   </div>`;
 }
 
+/* chips para filtrar la lista por tarjeta, con cuántas compras y cuánto suma cada una */
+function setComprasCard(id){ comprasCard=id; renderCompras(); }
+function cardFilterHtml(){
+  const all=buysForMonth(curMonthKey);
+  if(comprasCard!=='all' && !db.config.cards.some(c=>c.id===comprasCard)) comprasCard='all';
+  const sum=arr=>arr.reduce((t,b)=>t+(b.amt||0),0);
+  const chip=(id,label,arr)=>`<button type="button" class="fchip${comprasCard===id?' on':''}" onclick="setComprasCard('${id}')">${esc(label)} <span class="fchip-n">${arr.length}</span></button>`;
+  const chips=[chip('all','Todas',all)].concat(db.config.cards.map(c=>{ const arr=all.filter(b=>b.card===c.id); return arr.length?chip(c.id,c.name,arr):''; })).join('');
+  const shown=comprasCard==='all'?all:all.filter(b=>b.card===comprasCard);
+  return `<div class="fchips">${chips}</div>
+    <p class="hint" style="margin:0 0 12px">${shown.length} ${shown.length===1?'compra':'compras'} · total <b>${fmt(sum(shown))}</b></p>`;
+}
 function buyRows(){
-  const buys=buysForMonth(curMonthKey).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  const buys=buysForMonth(curMonthKey).filter(b=>comprasCard==='all'||b.card===comprasCard).slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+  if(!buys.length && comprasCard!=='all') return '<div class="card"><div class="empty"><p>Esta tarjeta no tiene compras este mes.</p></div></div>';
   if(!buys.length) return '<div class="card"><div class="empty"><div class="ico">🧾</div><p>Sin compras este mes. Pulsa «Agregar compra».</p></div></div>';
   const cardName=id=>{ const c=db.config.cards.find(x=>x.id===id); return c?c.name:'—'; };
   return buys.map(b=>`
@@ -1146,7 +1263,7 @@ function buyRows(){
           ${b.date?`<span>${b.date.slice(8,10)}/${b.date.slice(5,7)}</span>`:''}
         </div>
       </div>
-      <div class="buy-amt">${fmt(b.amt)}</div>
+      <div class="buy-amt"${b.amt<0?' style="color:var(--ok)"':''}>${b.amt<0?'−'+fmt(-b.amt)+' <span style="font-size:11px;font-weight:500">devolución</span>':fmt(b.amt)}</div>
       <button class="buy-del" title="Editar" onclick="openBuyModal('${b.id}')" style="font-size:14px">✎</button>
       <button class="buy-del" title="Borrar" onclick="delBuy('${b.id}')">×</button>
     </div>`).join('');
@@ -1160,8 +1277,11 @@ function renderCuentas(){
   const el=document.getElementById('v-cuentas');
   const who=cuentasPerson;
   const moves=M().moves[who].slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
-  let inc=0,out=0,saveUSD=0,saveCOP=0;
+  let inc=0,out=0,saveUSD=0,saveCOP=0,savIn=0,savOut=0;
   moves.forEach(m=>{
+    // lo que entra o sale de una cuenta de AHORRO (bolsillo, bóveda) no toca el balance del mes:
+    // esa plata ya estaba guardada, no sale de los ingresos del mes. Solo mueve el saldo de esa cuenta.
+    if(isSavingsMove(m)){ if(m.dir>0) savIn+=m.amt; else savOut+=m.amt; return; }
     if(m.dir>0) inc+=m.amt; else out+=m.amt;
     if(m.cat==='Ahorro'){ if(m.cur==='USD') saveUSD+=m.amtUSD||0; else saveCOP+=m.amt; }
   });
@@ -1193,6 +1313,7 @@ function renderCuentas(){
       <div class="stat"><div class="k">Gastos del mes</div><div class="v sm num">${fmt(out).slice(1)}</div><div class="foot">solo este mes</div></div>
       <div class="stat"><div class="k">Balance del mes</div><div class="v sm num" style="color:${saldo<0?'var(--warn)':'var(--ok)'}">${saldo<0?'−':'+'}${fmt(Math.abs(saldo)).slice(1)}</div><div class="foot">ingresos − gastos</div></div>
     </div>
+    ${(savIn||savOut)?`<p class="hint" style="margin:-16px 0 26px">🔒 No cuentan en el balance porque son de cuentas de ahorro: ${savOut?`<b>${fmt(savOut)}</b> salieron de ahorros`:''}${savIn&&savOut?' · ':''}${savIn?`<b>${fmt(savIn)}</b> entraron a ahorros`:''}. Ya se reflejan en el saldo de cada cuenta.</p>`:''}
 
     <div class="block-label">Movimientos de ${esc(monthName(curMonthKey))}</div>
     ${moves.length?`<div class="table-wrap"><table class="fin t-moves">
@@ -1233,8 +1354,9 @@ function accountsStrip(who){
     ${cards}
   </div>`;
 }
+function isSavingsMove(m){ const a=m&&m.acc?accById(m.acc):null; return !!(a&&a.type==='ahorro'); }
 function moveRow(m,who){
-  const auto = m.auto ? ' <span class="tag cat">auto</span>' : '';
+  const auto = (m.auto ? ' <span class="tag cat">auto</span>' : '') + (isSavingsMove(m) ? ' <span class="tag cat" title="Movimiento de una cuenta de ahorro: no cuenta en el balance del mes">🔒 ahorro</span>' : '');
   const acts = m.auto ? '' : `<button class="buy-del" onclick="openMoveModal('${m.id}')" title="Editar" style="font-size:13px">✎</button> <button class="buy-del" onclick="delMove('${who}','${m.id}')" title="Borrar">×</button>`;
   return `<tr>
     <td style="font-weight:400;white-space:nowrap">${m.date?m.date.slice(8,10)+'/'+m.date.slice(5,7):'—'}</td>
@@ -1275,7 +1397,7 @@ function renderConfig(){
           </div>
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
             <span style="color:var(--ink-faint)">Cupo</span>
-            <input value="${limits[c.id]?limits[c.id].toLocaleString('es-CO'):''}" placeholder="0" inputmode="numeric" oninput="moneyInput(this);setCardLimitQuiet('${c.id}',this.value)" onchange="setCardLimit('${c.id}',this.value)" style="width:120px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
+            <input value="${limits[c.id]?limits[c.id].toLocaleString('es-CO',{maximumFractionDigits:2}):''}" placeholder="0" inputmode="decimal" oninput="moneyInput(this);setCardLimitQuiet('${c.id}',this.value)" onchange="setCardLimit('${c.id}',this.value)" style="width:120px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
             <span style="color:var(--ink-faint)">Corta el día</span>
             <input value="${(db.config.cardCuts||{})[c.id]||''}" placeholder="8" inputmode="numeric" onchange="setCardCut('${c.id}',this.value)" style="width:52px;padding:6px;text-align:center;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)">
           </div>
@@ -1287,16 +1409,38 @@ function renderConfig(){
         <button class="btn ghost sm" style="margin-top:12px" onclick="addCard()">+ Añadir tarjeta</button>
       </div>
 
+      <div class="cfg-card">
+        <h3>Semáforo de tarjetas</h3>
+        <p class="desc">Tope de gasto por tarjeta en cada mes. Si el cupo es mayor al tope máximo, el tope es el máximo; si es igual o menor, se gasta máximo el % que pongas del cupo.</p>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin-bottom:10px;cursor:pointer">
+          <input type="checkbox" ${cb().on?'checked':''} onchange="setBudget('on',this.checked)" style="width:auto"> Usar el semáforo
+        </label>
+        <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;font-size:12.5px;margin-bottom:12px">
+          <span style="color:var(--ink-faint)">Desde</span>
+          <input type="month" value="${esc(cb().from||'')}" onchange="setBudget('from',this.value)" style="padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)">
+          <span style="color:var(--ink-faint)">Tope máximo</span>
+          <input value="${(cb().max||0).toLocaleString('es-CO')}" inputmode="decimal" oninput="moneyInput(this)" onchange="setBudget('max',this.value)" style="width:110px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)">
+          <span style="color:var(--ink-faint)">Cupos pequeños: máximo</span>
+          <input value="${cb().pctSmall||50}" inputmode="numeric" onchange="setBudget('pctSmall',this.value)" style="width:48px;padding:6px;text-align:center;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)"><span style="color:var(--ink-faint)">% del cupo</span>
+        </div>
+        ${db.config.cards.map(c=>{ const own=(cb().custom||{})[c.id]; return `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:8px 0;border-top:1px solid var(--line-soft);font-size:13px">
+          <span style="flex:1;min-width:110px;font-weight:600">${esc(c.name)}</span>
+          <span style="color:var(--ink-soft)">Tope: <b>${fmt(cardTope(c.id))}</b>${own>0?' (propio)':''}</span>
+          <input value="${own>0?own.toLocaleString('es-CO'):''}" placeholder="automático" inputmode="decimal" oninput="moneyInput(this)" onchange="setCardTope('${c.id}',this.value)" style="width:110px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:12.5px">
+        </div>`; }).join('')}
+        <p class="hint" style="margin:8px 0 0">Deja el campo en blanco para usar el tope automático, o escribe un tope propio para esa tarjeta.</p>
+      </div>
+
       <div style="display:flex;flex-direction:column;gap:20px">
         <div class="cfg-card">
           <h3>Salarios</h3>
           <p class="desc">Los ingresos fijos. Aparecen cada mes; los ajustas si hay prima o bono desde el Resumen.</p>
-          <div class="fieldrow"><span class="fl"><span class="tag nico"><span class="d"></span>${esc(db.config.people.a.name)}</span></span><input value="${db.config.people.a.salary?db.config.people.a.salary.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setSalary('a',this.value)"></div>
-          <div class="fieldrow"><span class="fl"><span class="tag mari"><span class="d"></span>${esc(db.config.people.b.name)}</span></span><input value="${db.config.people.b.salary?db.config.people.b.salary.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setSalary('b',this.value)"></div>
+          <div class="fieldrow"><span class="fl"><span class="tag nico"><span class="d"></span>${esc(db.config.people.a.name)}</span></span><input value="${db.config.people.a.salary?db.config.people.a.salary.toLocaleString('es-CO',{maximumFractionDigits:2}):''}" inputmode="decimal" oninput="moneyInput(this)" onchange="setSalary('a',this.value)"></div>
+          <div class="fieldrow"><span class="fl"><span class="tag mari"><span class="d"></span>${esc(db.config.people.b.name)}</span></span><input value="${db.config.people.b.salary?db.config.people.b.salary.toLocaleString('es-CO',{maximumFractionDigits:2}):''}" inputmode="decimal" oninput="moneyInput(this)" onchange="setSalary('b',this.value)"></div>
           <div class="fieldrow"><span class="fl" style="font-weight:600;color:var(--ink)">Proporción</span><span style="font-weight:700">${esc(db.config.people.a.name)} ${Math.round(p.a*100)}% · ${esc(db.config.people.b.name)} ${Math.round(p.b*100)}%</span></div>
           <div style="margin-top:14px;display:flex;gap:8px">
-            <input class="txt" style="flex:1;width:auto" id="nameA" value="${esc(db.config.people.a.name)}" onchange="setName('a',this.value)" placeholder="Nombre 1">
-            <input class="txt" style="flex:1;width:auto" id="nameB" value="${esc(db.config.people.b.name)}" onchange="setName('b',this.value)" placeholder="Nombre 2">
+            <input class="txt" style="flex:1;width:auto;min-width:0" id="nameA" value="${esc(db.config.people.a.name)}" onchange="setName('a',this.value)" placeholder="Nombre 1">
+            <input class="txt" style="flex:1;width:auto;min-width:0" id="nameB" value="${esc(db.config.people.b.name)}" onchange="setName('b',this.value)" placeholder="Nombre 2">
           </div>
         </div>
 
@@ -1306,7 +1450,7 @@ function renderConfig(){
           ${db.config.fixedExpenses.map(f=>`<div style="padding:12px 0;border-bottom:1px solid var(--line-soft)">
             <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
               <input class="txt" style="flex:1;width:auto" value="${esc(f.name)}" onchange="setFixedName('${f.id}',this.value)" placeholder="Nombre">
-              <input style="width:120px" value="${f.amt?f.amt.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setFixedAmt('${f.id}',this.value)" placeholder="valor">
+              <input style="width:120px" value="${f.amt?f.amt.toLocaleString('es-CO',{maximumFractionDigits:2}):''}" inputmode="decimal" oninput="moneyInput(this)" onchange="setFixedAmt('${f.id}',this.value)" placeholder="valor">
               <button class="del" onclick="delFixed('${f.id}')" title="Borrar">×</button>
             </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
@@ -1330,7 +1474,7 @@ function renderConfig(){
           ${db.config.savingGoals.map(g=>`<div style="padding:12px 0;border-bottom:1px solid var(--line-soft)">
             <div style="display:flex;gap:6px;align-items:center;margin-bottom:8px">
               <input class="txt" style="flex:1;width:auto" value="${esc(g.name)}" onchange="setGoalName('${g.id}',this.value)" placeholder="Nombre de la meta">
-              <input style="width:120px" value="${g.amt?g.amt.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setGoalAmt('${g.id}',this.value)" placeholder="meta">
+              <input style="width:120px" value="${g.amt?g.amt.toLocaleString('es-CO',{maximumFractionDigits:2}):''}" inputmode="decimal" oninput="moneyInput(this)" onchange="setGoalAmt('${g.id}',this.value)" placeholder="meta">
               <button class="del" onclick="delGoal('${g.id}')" title="Borrar">×</button>
             </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
@@ -1370,7 +1514,7 @@ function renderConfig(){
             </div>
             <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:12.5px">
               <span style="color:var(--ink-faint)">Saldo inicial</span>
-              <input value="${a.bal0?a.bal0.toLocaleString('es-CO'):''}" inputmode="numeric" oninput="moneyInput(this)" onchange="setAccBal0('${a.id}',this.value)" placeholder="0" style="width:110px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
+              <input value="${a.bal0?a.bal0.toLocaleString('es-CO',{maximumFractionDigits:2}):''}" inputmode="decimal" oninput="moneyInput(this)" onchange="setAccBal0('${a.id}',this.value)" placeholder="0" style="width:110px;padding:6px 9px;text-align:right;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-variant-numeric:tabular-nums">
               ${a.type==='ahorro'?`<span style="color:var(--ink-faint)">Rentab. E.A.</span>
               <input value="${a.ear||''}" inputmode="decimal" onchange="setAccEar('${a.id}',this.value)" placeholder="11" style="width:56px;padding:6px;text-align:center;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)"><span style="color:var(--ink-faint)">%</span>`:''}
             </div>
@@ -1383,11 +1527,33 @@ function renderConfig(){
 }
 
 /* ---- parseo de números (formato colombiano: puntos de miles) ---- */
-function parseNum(v){ if(v==null)return 0; return Math.round(parseFloat(String(v).replace(/[^\d,-]/g,'').replace(/\./g,'').replace(',','.'))||0); }
-/* formatea un input de dinero en vivo: puntos de miles mientras se escribe */
+/* Formato colombiano: punto = miles, coma = decimales (hasta 2).
+   Si el teclado del celular pone punto como decimal (ej. "45.5" o "45.50"), también se entiende. */
+function normNumStr(v){
+  let t=String(v==null?'':v).trim().replace(/[^\d.,-]/g,'');
+  if(!t.includes(',')){ const m=t.match(/^(.*)\.(\d{0,2})$/); if(m && !/\.\d{3}$/.test(t)) t=m[1]+','+m[2]; }
+  return t;
+}
+function parseNum(v){
+  if(v==null) return 0;
+  const t=normNumStr(v).replace(/\./g,'').replace(',','.');
+  const n=parseFloat(t);
+  return isNaN(n)?0:Math.round(n*100)/100;
+}
+/* formatea un input de dinero en vivo: puntos de miles mientras se escribe, y respeta la coma decimal */
 function moneyInput(el){
-  const n=parseNum(el.value);
-  el.value = n>0 ? n.toLocaleString('es-CO') : '';
+  const t=normNumStr(el.value);
+  if(!t){ el.value=''; return; }
+  const ci=t.indexOf(',');
+  const intDigits=(ci>=0?t.slice(0,ci):t).replace(/\D/g,'');
+  const intPart=intDigits?parseInt(intDigits,10).toLocaleString('es-CO'):'0';
+  if(ci>=0){
+    const decDigits=t.slice(ci+1).replace(/\D/g,'');
+    // en pesos nadie usa 3 decimales: si escribiste "12.500" o "12,500" eran miles, no centavos
+    if(decDigits.length>=3){ el.value=parseInt(intDigits+decDigits,10).toLocaleString('es-CO'); return; }
+    el.value=intPart+','+decDigits;
+  }
+  else el.value= intDigits?intPart:'';
 }
 
 /* ---- acciones config ---- */
@@ -1396,14 +1562,23 @@ function setCardLimitQuiet(id,v){ db.config.cardLimits[id]=parseNum(v); save(); 
 function setCardCut(id,v){ const n=parseInt(String(v).replace(/\D/g,''))||0; db.config.cardCuts[id]=Math.min(31,Math.max(0,n)); save(); }
 function setCardPayNext(id,v){ db.config.cardPayNext[id]=!!v; save(); }
 function delCard(id){ if(!confirm('¿Borrar esta tarjeta?'))return; db.config.cards=db.config.cards.filter(c=>c.id!==id); delete db.config.cardLimits[id]; delete db.config.cardCuts[id]; save(); renderConfig(); }
+function setBudget(k,v){
+  const B=db.config.cardBudget;
+  if(k==='on') B.on=!!v;
+  else if(k==='from') B.from=v||B.from;
+  else if(k==='max') B.max=parseNum(v)||1000000;
+  else if(k==='pctSmall'){ const n=parseFloat(String(v).replace(',','.')); B.pctSmall=(n>0&&n<=100)?n:50; }
+  save(); renderConfig();
+}
+function setCardTope(id,v){ const n=parseNum(v); if(n>0) db.config.cardBudget.custom[id]=n; else delete db.config.cardBudget.custom[id]; save(); renderConfig(); }
 function addCard(){ const n=prompt('Nombre de la tarjeta:'); if(!n)return; db.config.cards.push({id:uid(),name:n.trim()}); save(); renderConfig(); }
 function setSalary(w,v){ db.config.people[w].salary=parseNum(v); save(); renderConfig(); }
 function setName(w,v){ db.config.people[w].name=v.trim()||(w==='a'?'Nico':'Mari'); save(); renderAll(); }
-function addFixed(){ const n=prompt('Nombre del gasto fijo:'); if(!n)return; db.config.fixedExpenses.push({id:uid(),name:n.trim(),amt:0,cat:'Hogar',who:'shared',pay:'',cut:''}); save(); renderConfig(); }
+function addFixed(){ const n=prompt('Nombre del gasto fijo:'); if(!n)return; const h=autoCat(n); db.config.fixedExpenses.push({id:uid(),name:n.trim(),amt:0,cat:h?h.cat:'Hogar',sub:h?h.sub:'',who:'shared',pay:'',cut:''}); save(); renderConfig(); }
 function setFixedWho(id,v){ const f=db.config.fixedExpenses.find(x=>x.id===id); if(f){f.who=v;save();renderConfig();} }
 function setFixedPay(id,v){ const f=db.config.fixedExpenses.find(x=>x.id===id); if(f){f.pay=v;save();} }
 function setFixedCut(id,v){ const f=db.config.fixedExpenses.find(x=>x.id===id); if(f){f.cut=v;save();} }
-function setFixedName(id,v){ const f=db.config.fixedExpenses.find(x=>x.id===id); if(f){f.name=v.trim();save();} }
+function setFixedName(id,v){ const f=db.config.fixedExpenses.find(x=>x.id===id); if(f){f.name=v.trim(); const h=autoCat(f.name); if(h){f.cat=h.cat;f.sub=h.sub;} save(); renderResumen&&renderResumen();} }
 function setFixedAmt(id,v){ const f=db.config.fixedExpenses.find(x=>x.id===id); if(f){f.amt=parseNum(v);save();renderConfig();} }
 function delFixed(id){ db.config.fixedExpenses=db.config.fixedExpenses.filter(f=>f.id!==id); save(); renderConfig(); }
 function addGoal(){ const n=prompt('Nombre de la meta de ahorro:'); if(!n)return; db.config.savingGoals.push({id:uid(),name:n.trim(),amt:0}); save(); renderConfig(); }
@@ -1442,7 +1617,7 @@ function openBuyModal(editId){
         <div class="fld"><label>¿Qué compraste?</label><input id="bDesc" required value="${esc(buy.desc)}" oninput="updateAutoCat('b')" autocomplete="off"></div>
         <div class="fld-row">
           <div class="fld"><label>Tarjeta</label><select id="bCard">${cards(buy.card)}</select></div>
-          <div class="fld"><label>Valor</label><input id="bAmt" inputmode="numeric" required value="${buy.amt?buy.amt.toLocaleString('es-CO'):''}" oninput="moneyInput(this)"></div>
+          <div class="fld"><label>Valor</label><input id="bAmt" inputmode="decimal" required value="${buy.amt?Math.abs(buy.amt).toLocaleString('es-CO',{maximumFractionDigits:2}):''}" oninput="moneyInput(this)"></div>
         </div>
         <div class="fld"><label>¿De quién es?</label>
           <div class="choice">
@@ -1453,6 +1628,9 @@ function openBuyModal(editId){
         </div>
         <div id="bCatBox">${catPickerHtml('b',buy.cat||'',buy.sub||'')}</div>
         <div class="fld"><label>Fecha</label><input type="date" id="bDate" value="${buy.date||today()}"></div>
+        <label style="display:flex;align-items:center;gap:8px;font-size:13px;margin:0 0 14px;cursor:pointer">
+          <input type="checkbox" id="bRef" ${buy.refund?'checked':''} style="width:auto"> Ya me devolvieron este valor (resta en vez de sumar)
+        </label>
         <button type="submit" class="btn">Guardar cambios</button>
       </form>`);
     return;
@@ -1461,7 +1639,8 @@ function openBuyModal(editId){
   openModal(`
     <div class="modal-h"><h3>Agregar compras</h3><button class="x" data-close>×</button></div>
     <form onsubmit="saveBuysMulti(event)">
-      <div class="fld"><label>Tarjeta (para todas)</label><select id="bCard">${cards()}</select></div>
+      <div class="fld"><label>Tarjeta (para todas)</label><select id="bCard" onchange="updateBudgetHint()">${cards()}</select></div>
+      <div class="budget-hint" id="budgetHint" style="display:none"></div>
       <p class="hint" style="margin:0 0 10px">Agrega todas las compras de esta tarjeta de una vez. La categoría se detecta sola.</p>
       <p class="hint" id="draftNote" style="display:none;margin:0 0 10px;color:var(--nico-ink)">✓ Recuperamos las compras que estabas escribiendo.</p>
       <div id="buyRows"></div>
@@ -1475,7 +1654,7 @@ function openBuyModal(editId){
     draft.rows.forEach(r=>{
       const i=buyRowSeq; addBuyRow();
       document.getElementById('rdesc'+i).value=r.desc||''; document.getElementById('ramt'+i).value=r.amt||'';
-      if(r.date) document.getElementById('rdate'+i).value=r.date; if(r.who) document.getElementById('rwho'+i).value=r.who;
+      if(r.date) document.getElementById('rdate'+i).value=r.date; if(r.who) document.getElementById('rwho'+i).value=r.who; if(r.ref) document.getElementById('rref'+i).checked=true;
       rowAuto(i);
     });
     document.getElementById('draftNote').style.display='block';
@@ -1483,6 +1662,8 @@ function openBuyModal(editId){
   } else { addBuyRow(); addBuyRow(); }
   const form=document.getElementById('buyRows').closest('form');
   form.addEventListener('input',saveBuyDraft); form.addEventListener('change',saveBuyDraft);
+  form.addEventListener('input',updateBudgetHint); form.addEventListener('change',updateBudgetHint);
+  updateBudgetHint();
 }
 /* una fila de compra en modo múltiple */
 function addBuyRow(){
@@ -1497,10 +1678,11 @@ function addBuyRow(){
       <button type="button" onclick="this.closest('div[data-brow]').remove();saveBuyDraft()" style="background:none;border:none;color:var(--ink-faint);font-size:18px;cursor:pointer">×</button>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-      <input id="ramt${i}" inputmode="numeric" placeholder="Valor" oninput="moneyInput(this)" style="width:110px;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:13px;text-align:right;background:var(--bg);color:var(--ink)">
+      <input id="ramt${i}" inputmode="decimal" placeholder="Valor" oninput="moneyInput(this)" style="width:110px;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:13px;text-align:right;background:var(--bg);color:var(--ink)">
       <input type="date" id="rdate${i}" value="${today()}" style="padding:8px;border:1px solid var(--line);border-radius:8px;font-size:13px;background:var(--bg);color:var(--ink)">
       ${whoOpts}
       <span id="rcat${i}" class="tag cat" style="font-size:11px">—</span>
+      <label title="Marca si es una devolución que YA te hicieron: resta en vez de sumar" style="display:flex;align-items:center;gap:4px;font-size:11.5px;color:var(--ink-soft);cursor:pointer"><input type="checkbox" id="rref${i}" style="width:auto;margin:0">Devolución</label>
     </div>`;
   row.setAttribute('data-brow','1'); row.dataset.i=i;
   document.getElementById('buyRows').appendChild(row);
@@ -1508,7 +1690,7 @@ function addBuyRow(){
 /* detección auto por fila */
 function rowAuto(i){
   const desc=document.getElementById('rdesc'+i).value;
-  const hit=autoCat(desc);
+  const hit=buyAutoCat(desc);
   const chip=document.getElementById('rcat'+i);
   if(hit){ chip.textContent=hit.cat+' › '+hit.sub; chip.dataset.cat=hit.cat; chip.dataset.sub=hit.sub; }
   else { chip.textContent='Otros'; chip.dataset.cat='Otros'; chip.dataset.sub='Otros'; }
@@ -1527,7 +1709,8 @@ function saveBuysMulti(e){
     const who=document.getElementById('rwho'+i).value;
     const chip=document.getElementById('rcat'+i);
     const cat=chip.dataset.cat||'Otros', sub=chip.dataset.sub||'Otros';
-    const buy={id:uid(),desc,card,amt,who,cat,sub,date};
+    const ref=!!(document.getElementById('rref'+i)||{}).checked;
+    const buy={id:uid(),desc,card,amt:signedAmt(ref,amt),who,cat,sub,date}; if(ref) buy.refund=true;
     M(payMonthOf(date,card)).buys.push(buy);
     added++;
   });
@@ -1542,7 +1725,8 @@ function saveBuyEdit(e,id){
   const newCard=document.getElementById('bCard').value;
   Object.assign(buy,{
     desc:document.getElementById('bDesc').value.trim(),
-    card:newCard, amt:parseNum(document.getElementById('bAmt').value),
+    card:newCard, amt:signedAmt(document.getElementById('bRef').checked,parseNum(document.getElementById('bAmt').value)),
+    refund:document.getElementById('bRef').checked,
     who:document.querySelector('input[name=bwho]:checked').value,
     cat:document.getElementById('bCat').value,
     sub:document.getElementById('bSub')?document.getElementById('bSub').value:'',
@@ -1567,7 +1751,7 @@ function catPickerHtml(prefix, cat, sub){
 /* al escribir la descripción, detecta y rellena categoría+subcategoría */
 function updateAutoCat(prefix){
   const desc=document.getElementById(prefix+'Desc').value;
-  const hit=autoCat(desc);
+  const hit=prefix==='b'?buyAutoCat(desc):autoCat(desc);
   if(hit){
     document.getElementById(prefix+'CatBox').innerHTML=catPickerHtml(prefix,hit.cat,hit.sub);
   }
@@ -1688,7 +1872,7 @@ function openMoveModal(editId){
       </div>
       <div class="fld"><label>Descripción</label><input id="mDesc" required value="${m?esc(m.desc):''}" placeholder="Ej: Almuerzo" oninput="updateAutoCat('m')" autocomplete="off"></div>
       <div class="fld-row">
-        <div class="fld"><label>Valor</label><input id="mAmt" inputmode="numeric" required value="${m&&m.amt?m.amt.toLocaleString('es-CO'):''}" placeholder="0" oninput="moneyInput(this)"></div>
+        <div class="fld"><label>Valor</label><input id="mAmt" inputmode="decimal" required value="${m&&m.amt?m.amt.toLocaleString('es-CO',{maximumFractionDigits:2}):''}" placeholder="0" oninput="moneyInput(this)"></div>
         <div class="fld"><label>Fecha</label><input type="date" id="mDate" value="${m?m.date:today()}"></div>
       </div>
       <div id="mCatBox">${moveCatPicker(m?m.cat:'',m?m.sub:'')}</div>
@@ -1766,7 +1950,7 @@ function openYieldModal(){
         <select id="yAcc" onchange="updateYieldHint()">${accs.map(a=>`<option value="${a.id}">${esc(a.name)}</option>`).join('')}</select>
       </div>
       <div class="fld-row">
-        <div class="fld"><label>Valor que rindió</label><input id="yAmt" inputmode="numeric" required placeholder="0" oninput="moneyInput(this)"></div>
+        <div class="fld"><label>Valor que rindió</label><input id="yAmt" inputmode="decimal" required placeholder="0" oninput="moneyInput(this)"></div>
         <div class="fld"><label>Fecha</label><input type="date" id="yDate" value="${today()}"></div>
       </div>
       <p class="hint" id="yHint">${est>0?`Estimado de este mes para esta cuenta: ~${fmt(est)}`:''}</p>
@@ -1807,10 +1991,10 @@ function openTransferModal(){
     <form onsubmit="saveTransfer(event)">
       <div class="fld"><label>Desde (sale de)</label><select id="tFrom" onchange="updateTransferConv()">${opts(accs[0].id)}</select></div>
       <div class="fld"><label>Hacia (entra a)</label><select id="tTo" onchange="updateTransferConv()">${opts(accs[1].id)}</select></div>
-      <div class="fld"><label id="tAmtLabel">Monto</label><input id="tAmt" inputmode="numeric" required placeholder="0" oninput="moneyInput(this)"></div>
+      <div class="fld"><label id="tAmtLabel">Monto</label><input id="tAmt" inputmode="decimal" required placeholder="0" oninput="moneyInput(this)"></div>
       <div class="fld" id="tConvFld" hidden>
         <label id="tConvLabel">¿Cuánto te quedó? (lo que dice el banco)</label>
-        <input id="tAmtDest" inputmode="numeric" placeholder="0" oninput="moneyInput(this)">
+        <input id="tAmtDest" inputmode="decimal" placeholder="0" oninput="moneyInput(this)">
         <p class="hint">Como cambias de moneda, escribe el valor final que te cargó el banco.</p>
       </div>
       <div class="fld"><label>Fecha</label><input type="date" id="tDate" value="${today()}"></div>
@@ -1884,7 +2068,7 @@ function calcRowsHtml(){
         <option value="a"${r.who==='a'?' selected':''}>${esc(whoName('a'))}</option>
         <option value="b"${r.who==='b'?' selected':''}>${esc(whoName('b'))}</option>
       </select>
-      <input inputmode="numeric" value="${r.amt?r.amt.toLocaleString('es-CO'):''}" placeholder="Valor" oninput="moneyInput(this)" onchange="editSettle(${i},'amt',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:13.5px;background:var(--bg);color:var(--ink);text-align:right;font-variant-numeric:tabular-nums">
+      <input inputmode="decimal" value="${r.amt?r.amt.toLocaleString('es-CO',{maximumFractionDigits:2}):''}" placeholder="Valor" oninput="moneyInput(this)" onchange="editSettle(${i},'amt',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:13.5px;background:var(--bg);color:var(--ink);text-align:right;font-variant-numeric:tabular-nums">
       <button onclick="delSettle(${i})" style="background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:16px">×</button>
     </div>`;
   }).join('');
