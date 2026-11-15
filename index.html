@@ -869,14 +869,38 @@ document.getElementById('restoreFile').onchange=(e)=>{
 };
 
 /* modal helpers */
+/* La ventana YA NO se cierra al hacer clic por fuera: solo con la ×.
+   Si escribiste algo y le das ×, pregunta antes de borrar. */
+let modalDirty=false;
 function openModal(html){
   const s=document.getElementById('scrim');
   s.innerHTML='<div class="modal">'+html+'</div>';
   s.classList.add('on');
-  s.querySelectorAll('[data-close]').forEach(b=>b.onclick=closeModal);
-  s.onclick=(e)=>{ if(e.target===s) closeModal(); };
+  modalDirty=false;
+  s.querySelectorAll('[data-close]').forEach(b=>b.onclick=tryCloseModal);
+  s.onclick=null;
+  s.oninput=()=>{ modalDirty=true; };
 }
-function closeModal(){ const s=document.getElementById('scrim'); s.classList.remove('on'); s.innerHTML=''; }
+function tryCloseModal(){
+  if(modalDirty && !confirm('¿Cerrar sin guardar? Lo que escribiste se va a borrar.')) return;
+  clearBuyDraft();
+  closeModal();
+}
+function closeModal(){ const s=document.getElementById('scrim'); s.classList.remove('on'); s.innerHTML=''; modalDirty=false; }
+document.addEventListener('keydown',e=>{ if(e.key==='Escape' && document.getElementById('scrim').classList.contains('on')) tryCloseModal(); });
+
+/* ---- borrador de "Agregar compras": se guarda mientras escribes ---- */
+const BUY_DRAFT_KEY='cc_buy_draft';
+function saveBuyDraft(){
+  const box=document.getElementById('buyRows'); if(!box) return;
+  const rows=[...box.querySelectorAll('[data-brow]')].map(r=>{ const i=r.dataset.i; return {
+    desc:document.getElementById('rdesc'+i).value, amt:document.getElementById('ramt'+i).value,
+    date:document.getElementById('rdate'+i).value, who:document.getElementById('rwho'+i).value }; });
+  const draft={card:document.getElementById('bCard').value, rows};
+  try{ if(rows.some(r=>r.desc.trim()||r.amt.trim())) localStorage.setItem(BUY_DRAFT_KEY,JSON.stringify(draft)); else localStorage.removeItem(BUY_DRAFT_KEY); }catch(_){}
+}
+function loadBuyDraft(){ try{ const d=JSON.parse(localStorage.getItem(BUY_DRAFT_KEY)||'null'); return d&&d.rows&&d.rows.some(r=>(r.desc||'').trim()||(r.amt||'').trim())?d:null; }catch(_){ return null; } }
+function clearBuyDraft(){ try{ localStorage.removeItem(BUY_DRAFT_KEY); }catch(_){} }
 </script>
 <script>
 /* ============================================================
@@ -1439,11 +1463,26 @@ function openBuyModal(editId){
     <form onsubmit="saveBuysMulti(event)">
       <div class="fld"><label>Tarjeta (para todas)</label><select id="bCard">${cards()}</select></div>
       <p class="hint" style="margin:0 0 10px">Agrega todas las compras de esta tarjeta de una vez. La categoría se detecta sola.</p>
+      <p class="hint" id="draftNote" style="display:none;margin:0 0 10px;color:var(--nico-ink)">✓ Recuperamos las compras que estabas escribiendo.</p>
       <div id="buyRows"></div>
       <button type="button" class="btn ghost sm" style="margin-top:4px" onclick="addBuyRow()">+ Otra compra</button>
       <button type="submit" class="btn" style="margin-top:10px">Guardar compras</button>
     </form>`);
-  buyRowSeq=0; document.getElementById('buyRows').innerHTML=''; addBuyRow(); addBuyRow();
+  buyRowSeq=0; document.getElementById('buyRows').innerHTML='';
+  const draft=loadBuyDraft();
+  if(draft){
+    const sel=document.getElementById('bCard'); if([...sel.options].some(o=>o.value===draft.card)) sel.value=draft.card;
+    draft.rows.forEach(r=>{
+      const i=buyRowSeq; addBuyRow();
+      document.getElementById('rdesc'+i).value=r.desc||''; document.getElementById('ramt'+i).value=r.amt||'';
+      if(r.date) document.getElementById('rdate'+i).value=r.date; if(r.who) document.getElementById('rwho'+i).value=r.who;
+      rowAuto(i);
+    });
+    document.getElementById('draftNote').style.display='block';
+    modalDirty=true;
+  } else { addBuyRow(); addBuyRow(); }
+  const form=document.getElementById('buyRows').closest('form');
+  form.addEventListener('input',saveBuyDraft); form.addEventListener('change',saveBuyDraft);
 }
 /* una fila de compra en modo múltiple */
 function addBuyRow(){
@@ -1455,7 +1494,7 @@ function addBuyRow(){
   row.innerHTML=`
     <div style="display:flex;gap:6px;margin-bottom:7px">
       <input id="rdesc${i}" placeholder="Descripción" oninput="rowAuto(${i})" autocomplete="off" style="flex:1;padding:9px 11px;border:1px solid var(--line);border-radius:8px;font-size:14px;background:var(--bg);color:var(--ink)">
-      <button type="button" onclick="this.closest('div[data-brow]').remove()" style="background:none;border:none;color:var(--ink-faint);font-size:18px;cursor:pointer">×</button>
+      <button type="button" onclick="this.closest('div[data-brow]').remove();saveBuyDraft()" style="background:none;border:none;color:var(--ink-faint);font-size:18px;cursor:pointer">×</button>
     </div>
     <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
       <input id="ramt${i}" inputmode="numeric" placeholder="Valor" oninput="moneyInput(this)" style="width:110px;padding:8px;border:1px solid var(--line);border-radius:8px;font-size:13px;text-align:right;background:var(--bg);color:var(--ink)">
@@ -1493,7 +1532,7 @@ function saveBuysMulti(e){
     added++;
   });
   if(!added){ alert('Agrega al menos una compra con descripción y valor.'); return; }
-  save(); closeModal(); renderCompras();
+  clearBuyDraft(); save(); closeModal(); renderCompras();
 }
 function saveBuyEdit(e,id){
   e.preventDefault();
