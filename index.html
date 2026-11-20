@@ -127,6 +127,14 @@
   html,body{max-width:100%;overflow-x:hidden}
   .ptables>*,.res-cols>*,.hero-strip>*{min-width:0}
   .settle-row{display:grid;grid-template-columns:1fr 104px 120px 30px;gap:8px;align-items:center;margin-bottom:8px}
+  .loan-row{display:grid;grid-template-columns:1fr 190px 112px 138px auto 26px;gap:8px;align-items:center;margin-bottom:8px}
+  .loan-row input,.loan-row select{min-width:0;width:100%}
+  @media (max-width:760px){
+    .loan-row{grid-template-columns:1fr 1fr;padding-bottom:10px;border-bottom:1px solid var(--line-soft)}
+    .loan-row .l-concept,.loan-row select{grid-column:1/-1}
+    .loan-row .btn{justify-self:start}
+    .loan-row > button:last-child{justify-self:end}
+  }
   .settle-row input,.settle-row select{min-width:0;width:100%}
   @media (max-width:600px){
     .wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
@@ -618,6 +626,7 @@ function normalizeDB(){
   if(!c.cardBudget) c.cardBudget={on:true, from:'2026-12', max:1000000, pctSmall:50, custom:{}};
   if(!c.cardBudget.custom) c.cardBudget.custom={};
   if(!db.months)db.months={};
+  if(!Array.isArray(db.loans)) db.loans=[];   // préstamos entre ustedes (no dependen del mes)
   migrateCarCats();
 }
 /* compras viejas que estaban en Transporte › Gasolina / Parqueaderos / Carro pasan a la categoría Carro */
@@ -2046,10 +2055,53 @@ function renderEntre(){
       <button class="btn ghost sm" style="margin-top:10px" onclick="addSettle()">+ Añadir gasto</button>
       <div id="calcResult" style="margin-top:20px">${calcResultHtml()}</div>
       <div style="margin-top:14px;display:flex;gap:8px;flex-wrap:wrap">
-        <button class="btn ghost sm" onclick="clearSettle()">Limpiar todo</button>
+        <button class="btn ghost sm" onclick="clearSettle()">Limpiar gastos del mes</button>
       </div>
+    </div>
+
+    <div class="block-label" style="margin-top:30px">Préstamos · se devuelven completos</div>
+    <div class="card" style="padding:22px;max-width:760px">
+      <p class="hint" style="margin-top:0">Cuando uno le presta plata al otro. No se reparte con la proporción: se devuelve el 100 %. Sigue pendiente de mes a mes hasta que lo marquen como pagado.</p>
+      <div id="loanRows">${loanRowsHtml()}</div>
+      <button class="btn ghost sm" style="margin-top:10px" onclick="addLoan()">+ Añadir préstamo</button>
+      ${paidLoansHtml()}
     </div>`;
 }
+/* ---- préstamos ---- */
+function pendingLoans(){ return (db.loans||[]).filter(l=>!l.paid); }
+function loanRowsHtml(){
+  const L=pendingLoans();
+  if(!L.length) return '<p class="hint">No hay préstamos pendientes.</p>';
+  const nA=whoName('a'), nB=whoName('b');
+  const st='padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:13.5px;background:var(--bg);color:var(--ink)';
+  return L.map(l=>`<div class="loan-row">
+      <input class="l-concept" value="${esc(l.concept||'')}" placeholder="¿Para qué? (ej. cabello)" onchange="editLoan('${l.id}','concept',this.value)" style="${st}">
+      <select onchange="editLoan('${l.id}','who',this.value)" style="${st}">
+        <option value="a"${l.who==='a'?' selected':''}>${esc(nA)} le prestó a ${esc(nB)}</option>
+        <option value="b"${l.who==='b'?' selected':''}>${esc(nB)} le prestó a ${esc(nA)}</option>
+      </select>
+      <input inputmode="decimal" value="${l.amt?l.amt.toLocaleString('es-CO',{maximumFractionDigits:2}):''}" placeholder="Valor" oninput="moneyInput(this)" onchange="editLoan('${l.id}','amt',this.value)" style="${st};text-align:right;font-variant-numeric:tabular-nums">
+      <input type="date" value="${l.date||''}" onchange="editLoan('${l.id}','date',this.value)" style="${st}">
+      <button class="btn ghost sm" onclick="payLoan('${l.id}')" title="Ya lo devolvió">✓ Pagado</button>
+      <button onclick="delLoan('${l.id}')" title="Borrar" style="background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:16px">×</button>
+    </div>`).join('');
+}
+function paidLoansHtml(){
+  const P=(db.loans||[]).filter(l=>l.paid).sort((a,b)=>(b.paidDate||'').localeCompare(a.paidDate||'')).slice(0,6);
+  if(!P.length) return '';
+  return `<div style="margin-top:18px;border-top:1px solid var(--line-soft);padding-top:12px">
+    <div class="hint" style="margin:0 0 6px">Ya pagados (últimos)</div>
+    ${P.map(l=>`<div style="display:flex;justify-content:space-between;gap:8px;font-size:12.5px;color:var(--ink-soft);padding:4px 0">
+      <span>${esc(l.concept||'Préstamo')} · ${esc(whoName(l.who==='a'?'b':'a'))} devolvió ${fmt(l.amt)}${l.paidDate?' el '+esc(l.paidDate.slice(8,10)+'/'+l.paidDate.slice(5,7)):''}</span>
+      <button onclick="unpayLoan('${l.id}')" title="Deshacer" style="background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:12px">deshacer</button>
+    </div>`).join('')}
+  </div>`;
+}
+function addLoan(){ db.loans.push({id:uid(),concept:'',who:'a',amt:0,date:today(),paid:false}); save(); renderEntre(); }
+function editLoan(id,f,v){ const l=db.loans.find(x=>x.id===id); if(!l)return; l[f]= f==='amt'?parseNum(v):v; save(); refreshEntre(); }
+function payLoan(id){ const l=db.loans.find(x=>x.id===id); if(!l)return; l.paid=true; l.paidDate=today(); save(); renderEntre(); }
+function unpayLoan(id){ const l=db.loans.find(x=>x.id===id); if(!l)return; l.paid=false; delete l.paidDate; save(); renderEntre(); }
+function delLoan(id){ const l=db.loans.find(x=>x.id===id); if(l&&l.amt>0&&!confirm('¿Borrar este préstamo? Si ya lo pagaron, mejor usa «✓ Pagado».'))return; db.loans=db.loans.filter(x=>x.id!==id); save(); renderEntre(); }
 function calcRowsHtml(){
   const rows=M().settle;
   if(!rows.length) return '<p class="hint">Aún no hay gastos. Pulsa «Añadir gasto», o aparecerán solos cuando pagues una tarjeta completa.</p>';
@@ -2075,7 +2127,8 @@ function calcRowsHtml(){
 }
 function calcResultHtml(){
   const all=M().settle.filter(r=>r.amt>0);
-  if(!all.length) return '';
+  const loans=pendingLoans().filter(l=>l.amt>0);
+  if(!all.length && !loans.length) return '';
   const p=pct();
   const nA=whoName('a'), nB=whoName('b');
   // 1) gastos normales (se reparten)
@@ -2088,6 +2141,8 @@ function calcResultHtml(){
   // 2) deudas directas (valor fijo entero)
   const directs=all.filter(r=>r.direct);
   directs.forEach(r=>{ if(r.who==='a')saldoA+=r.amt; else saldoA-=r.amt; });
+  // 3) préstamos pendientes (100 %, no se reparten)
+  loans.forEach(l=>{ if(l.who==='a')saldoA+=l.amt; else saldoA-=l.amt; });
   // veredicto
   let verdict;
   if(Math.abs(saldoA)<1) verdict=`<div style="text-align:center;font-weight:600;color:var(--ok)">Están a mano ✓</div>`;
@@ -2102,6 +2157,7 @@ function calcResultHtml(){
       <div class="row"><span class="lab">Le tocaba a ${esc(nA)} (${Math.round(p.a*100)}%)</span><span class="val">${fmt(tocaA)}</span></div>
       <div class="row"><span class="lab">Le tocaba a ${esc(nB)} (${Math.round(p.b*100)}%)</span><span class="val">${fmt(tocaB)}</span></div>
       ${directRows}
+      ${loans.map(l=>`<div class="row"><span class="lab">Préstamo: ${esc(l.concept||'sin concepto')} <span style="font-size:11px;color:var(--ink-faint);white-space:nowrap">(100 %)</span></span><span class="val">${l.who==='a'?esc(nB):esc(nA)} debe ${fmt(l.amt)}</span></div>`).join('')}
     </div>
     <div style="margin-top:14px;padding:14px;background:var(--surface-2);border-radius:11px">${verdict}</div>
   </div>`;
