@@ -126,12 +126,14 @@
   .fchip-n{opacity:.6;font-size:11.5px;margin-left:3px}
   html,body{max-width:100%;overflow-x:hidden}
   .ptables>*,.res-cols>*,.hero-strip>*{min-width:0}
-  .settle-row{display:grid;grid-template-columns:1fr 104px 120px 30px;gap:8px;align-items:center;margin-bottom:8px}
+  .settle-row{display:grid;grid-template-columns:1fr 104px 120px 170px 30px;gap:8px;align-items:center;margin-bottom:8px}
   .loan-row{display:grid;grid-template-columns:1fr 190px 112px 138px auto 26px;gap:8px;align-items:center;margin-bottom:8px}
+  .loan-row .l-acc{grid-column:1/4}
   .loan-row input,.loan-row select{min-width:0;width:100%}
   @media (max-width:760px){
     .loan-row{grid-template-columns:1fr 1fr;padding-bottom:10px;border-bottom:1px solid var(--line-soft)}
     .loan-row .l-concept,.loan-row select{grid-column:1/-1}
+    .loan-row .l-acc{order:5}
     .loan-row .btn{justify-self:start}
     .loan-row > button:last-child{justify-self:end}
   }
@@ -140,6 +142,7 @@
     .wrap{padding-left:max(16px,env(safe-area-inset-left,0px));padding-right:max(16px,env(safe-area-inset-right,0px))}
     .settle-row{grid-template-columns:1fr 1fr 30px;padding-bottom:10px;border-bottom:1px solid var(--line-soft)}
     .settle-row .s-concept{grid-column:1/-1}
+    .settle-row .s-acc{grid-column:1/-1;order:5}
     table.fin{font-size:13px;min-width:0 !important}
     table.fin th,table.fin td,table.fin tfoot td{padding:10px 8px}
     table.fin th{font-size:9.5px;letter-spacing:.03em}
@@ -608,30 +611,45 @@ function payMonthOf(dateISO, cardId){
   const d=new Date(dateISO+'T00:00:00');
   let corte=new Date(d.getFullYear(), d.getMonth(), cut);
   if(d > corte) corte=new Date(d.getFullYear(), d.getMonth()+1, cut); // pasó el corte de este mes
-  // Por defecto el pago se hace con el ingreso del mes ANTERIOR al corte.
-  // Si la tarjeta paga con el salario del mes SIGUIENTE (Lulo), el pago cae en el mes del corte.
-  const payNext=db.config.cardPayNext&&db.config.cardPayNext[cardId];
-  const offset=payNext?0:-1;
-  const pay=new Date(corte.getFullYear(), corte.getMonth()+offset, 1);
+  const pay=new Date(corte.getFullYear(), corte.getMonth()+cardLag(cardId), 1);
   return pay.getFullYear()+'-'+String(pay.getMonth()+1).padStart(2,'0');
 }
 
+/* ¿Con el salario de qué mes se paga cada corte?
+   -1 = del mes anterior al corte · 0 = del mismo mes del corte (ej. Lulo: corta 10 nov, paga 20 nov)
+   +1 = del mes siguiente al corte, "mes vencido" (ej. Davivienda: corta 8 nov, paga 25 dic) */
+function cardLag(cardId){
+  const L=db.config.cardPayLag||{};
+  if(L[cardId]===-1||L[cardId]===0||L[cardId]===1) return L[cardId];
+  return (db.config.cardPayNext||{})[cardId] ? 0 : -1;   // configuración vieja (casilla)
+}
+/* mes del corte que se paga en el mes `payKey` */
+function cutMonthFor(cardId,payKey){ return shiftMonth(payKey,-cardLag(cardId)); }
+function monthOnly(key){ return monthName(key).replace(/\s+de\s+\d{4}$/i,'').toLowerCase(); }
 function normalizeDB(){
   if(!db.config) db.config=blankDB().config;
   const c=db.config;
   if(!c.people) c.people={a:{name:"Nico",salary:0},b:{name:"Mari",salary:0}};
-  if(!c.cards)c.cards=[]; if(!c.cardLimits)c.cardLimits={}; if(!c.cardCuts)c.cardCuts={}; if(!c.cardPayNext)c.cardPayNext={};
+  if(!c.cards)c.cards=[]; if(!c.cardLimits)c.cardLimits={}; if(!c.cardCuts)c.cardCuts={}; if(!c.cardPayNext)c.cardPayNext={}; if(!c.cardPayLag)c.cardPayLag={};
+  // Davivienda se paga "mes vencido" (corte de noviembre → se paga el 25 de diciembre)
+  if(!c._daviLag){ (c.cards||[]).forEach(cd=>{ if(/davivienda/i.test(cd.name) && c.cardPayLag[cd.id]===undefined) c.cardPayLag[cd.id]=1; }); c._daviLag=true; }
   if(!c.fixedExpenses)c.fixedExpenses=[]; if(!c.savingGoals)c.savingGoals=[]; if(!c.accounts)c.accounts=[];
   if(!c.categories||!c.categories.length)c.categories=blankDB().config.categories;
   if(!c.cardBudget) c.cardBudget={on:true, from:'2026-12', max:1000000, pctSmall:50, custom:{}};
   if(!c.cardBudget.custom) c.cardBudget.custom={};
   if(!db.months)db.months={};
   if(!Array.isArray(db.loans)) db.loans=[];
-  linkMovesToAccounts();   // préstamos entre ustedes (no dependen del mes)
+  linkMovesToAccounts();
+  labelCardPayMoves();   // préstamos entre ustedes (no dependen del mes)
   migrateCarCats();
 }
 /* movimientos que solo guardaron el NOMBRE del banco (ej. pagos de tarjeta automáticos):
    se conectan a la cuenta de esa persona con el mismo nombre, para que resten del saldo */
+function labelCardPayMoves(){
+  Object.entries(db.months).forEach(([k,mo])=>{ if(!mo.moves) return; ['a','b'].forEach(w=>(mo.moves[w]||[]).forEach(m=>{
+    if(m.auto && m.linkCard && !/· corte /.test(m.desc||'')) m.desc=(m.desc||'Pago')+' · corte '+monthOnly(cutMonthFor(m.linkCard,k));
+  })); });
+}
 function linkMovesToAccounts(){
   const accs=db.config.accounts||[]; if(!accs.length) return;
   const n=x=>norm(x||'').trim();
@@ -1301,11 +1319,13 @@ function renderCuentas(){
   const el=document.getElementById('v-cuentas');
   const who=cuentasPerson;
   const moves=M().moves[who].slice().sort((a,b)=>(b.date||'').localeCompare(a.date||''));
-  let inc=0,out=0,saveUSD=0,saveCOP=0,savIn=0,savOut=0;
+  let inc=0,out=0,saveUSD=0,saveCOP=0,savIn=0,savOut=0,loanIn=0,loanOut=0;
   moves.forEach(m=>{
     // lo que entra o sale de una cuenta de AHORRO (bolsillo, bóveda) no toca el balance del mes:
     // esa plata ya estaba guardada, no sale de los ingresos del mes. Solo mueve el saldo de esa cuenta.
     if(isSavingsMove(m)){ if(m.dir>0) savIn+=m.amt; else savOut+=m.amt; return; }
+    // préstamos entre ustedes: mueven el saldo, pero no son gasto ni ingreso del mes
+    if(m.loan){ if(m.dir>0) loanIn+=m.amt; else loanOut+=m.amt; return; }
     if(m.dir>0) inc+=m.amt; else out+=m.amt;
     if(m.cat==='Ahorro'){ if(m.cur==='USD') saveUSD+=m.amtUSD||0; else saveCOP+=m.amt; }
   });
@@ -1338,6 +1358,7 @@ function renderCuentas(){
       <div class="stat"><div class="k">Balance del mes</div><div class="v sm num" style="color:${saldo<0?'var(--warn)':'var(--ok)'}">${saldo<0?'−':'+'}${fmt(Math.abs(saldo)).slice(1)}</div><div class="foot">ingresos − gastos</div></div>
     </div>
     ${(savIn||savOut)?`<p class="hint" style="margin:-16px 0 26px">🔒 No cuentan en el balance porque son de cuentas de ahorro: ${savOut?`<b>${fmt(savOut)}</b> salieron de ahorros`:''}${savIn&&savOut?' · ':''}${savIn?`<b>${fmt(savIn)}</b> entraron a ahorros`:''}. Ya se reflejan en el saldo de cada cuenta.</p>`:''}
+    ${(loanIn||loanOut)?`<p class="hint" style="margin:-16px 0 26px">🤝 Préstamos entre ustedes (no cuentan como gasto ni ingreso, solo mueven el saldo): ${loanOut?`<b>${fmt(loanOut)}</b> prestados`:''}${loanIn&&loanOut?' · ':''}${loanIn?`<b>${fmt(loanIn)}</b> devueltos`:''}.</p>`:''}
 
     <div class="block-label">Movimientos de ${esc(monthName(curMonthKey))}</div>
     ${moves.length?`<div class="table-wrap"><table class="fin t-moves">
@@ -1380,8 +1401,9 @@ function accountsStrip(who){
 }
 function isSavingsMove(m){ const a=m&&m.acc?accById(m.acc):null; return !!(a&&a.type==='ahorro'); }
 function moveRow(m,who){
-  const auto = (m.auto ? ' <span class="tag cat">auto</span>' : '') + (isSavingsMove(m) ? ' <span class="tag cat" title="Movimiento de una cuenta de ahorro: no cuenta en el balance del mes">🔒 ahorro</span>' : '');
-  const acts = m.auto ? '' : `<button class="buy-del" onclick="openMoveModal('${m.id}')" title="Editar" style="font-size:13px">✎</button> <button class="buy-del" onclick="delMove('${who}','${m.id}')" title="Borrar">×</button>`;
+  const auto = (m.loan ? ' <span class="tag cat" title="Se maneja desde Entre nosotros">🤝 préstamo</span>' : m.settleLink ? ' <span class="tag cat" title="Se maneja desde Entre nosotros">entre nosotros</span>' : m.auto ? ' <span class="tag cat">auto</span>' : '') + (isSavingsMove(m) ? ' <span class="tag cat" title="Movimiento de una cuenta de ahorro: no cuenta en el balance del mes">🔒 ahorro</span>' : '');
+  // los pagos de tarjeta automáticos se pueden corregir (valor real del banco, fecha, cuenta); préstamos y gastos de "Entre nosotros" se manejan allá
+  const acts = (m.auto && m.linkCard && !m.loan && !m.settleLink) ? `<button class="buy-del" onclick="openMoveModal('${m.id}')" title="Corregir valor o cuenta" style="font-size:13px">✎</button>` : m.auto ? '' : `<button class="buy-del" onclick="openMoveModal('${m.id}')" title="Editar" style="font-size:13px">✎</button> <button class="buy-del" onclick="delMove('${who}','${m.id}')" title="Borrar">×</button>`;
   return `<tr>
     <td style="font-weight:400;white-space:nowrap">${m.date?m.date.slice(8,10)+'/'+m.date.slice(5,7):'—'}</td>
     <td style="text-align:left;font-weight:600">${esc(m.desc)}${auto}</td>
@@ -1425,10 +1447,14 @@ function renderConfig(){
             <span style="color:var(--ink-faint)">Corta el día</span>
             <input value="${(db.config.cardCuts||{})[c.id]||''}" placeholder="8" inputmode="numeric" onchange="setCardCut('${c.id}',this.value)" style="width:52px;padding:6px;text-align:center;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink)">
           </div>
-          <label style="display:flex;align-items:center;gap:7px;margin-top:8px;font-size:12.5px;color:var(--ink-soft);cursor:pointer">
-            <input type="checkbox" ${(db.config.cardPayNext||{})[c.id]?'checked':''} onchange="setCardPayNext('${c.id}',this.checked)" style="width:auto">
-            Se paga con el salario del mes siguiente al corte
-          </label>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px;font-size:12.5px">
+            <span style="color:var(--ink-faint)">El corte se paga</span>
+            <select onchange="setCardLag('${c.id}',this.value)" style="padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:12.5px;max-width:100%">
+              <option value="0"${cardLag(c.id)===0?' selected':''}>el mismo mes del corte (ej. corta 10 nov → paga nov)</option>
+              <option value="1"${cardLag(c.id)===1?' selected':''}>el mes siguiente · mes vencido (ej. corta 8 nov → paga dic)</option>
+              <option value="-1"${cardLag(c.id)===-1?' selected':''}>con el salario del mes anterior al corte</option>
+            </select>
+          </div>
         </div>`).join('')}
         <button class="btn ghost sm" style="margin-top:12px" onclick="addCard()">+ Añadir tarjeta</button>
       </div>
@@ -1585,6 +1611,7 @@ function setCardLimit(id,v){ db.config.cardLimits[id]=parseNum(v); save(); rende
 function setCardLimitQuiet(id,v){ db.config.cardLimits[id]=parseNum(v); save(); }
 function setCardCut(id,v){ const n=parseInt(String(v).replace(/\D/g,''))||0; db.config.cardCuts[id]=Math.min(31,Math.max(0,n)); save(); }
 function setCardPayNext(id,v){ db.config.cardPayNext[id]=!!v; save(); }
+function setCardLag(id,v){ db.config.cardPayLag[id]=parseInt(v,10); save(); renderAll(); }
 function delCard(id){ if(!confirm('¿Borrar esta tarjeta?'))return; db.config.cards=db.config.cards.filter(c=>c.id!==id); delete db.config.cardLimits[id]; delete db.config.cardCuts[id]; save(); renderConfig(); }
 function setBudget(k,v){
   const B=db.config.cardBudget;
@@ -1840,7 +1867,7 @@ function savePay(e){
   // movimiento automático en mi libro: salida por mi parte (o total si pagué todo)
   const outAmt = whole ? (payCtx.amt+payCtx.otherAmt) : payCtx.amt;
   mo.moves[payCtx.who].push({
-    id:uid(), auto:true, date, desc:`Pago ${card.name}${whole?' (ambas partes)':''}`,
+    id:uid(), auto:true, date, desc:`Pago ${card.name}${whole?' (ambas partes)':''} · corte ${monthOnly(cutMonthFor(payCtx.cardId,curMonthKey))}`,
     cat:'Tarjetas', acc, bank, dir:-1, amt:outAmt, linkCard:payCtx.cardId
   });
   // si pagué la parte del otro, marcarla como pagada también (atada) y dejar reembolso pendiente
@@ -1851,7 +1878,7 @@ function savePay(e){
     // registrar en "Entre nosotros" como deuda directa (no se reparte)
     mo.settle.push({
       id:uid(), direct:true, linkCard:payCtx.cardId,
-      concept:`Pago ${card.name} (parte de ${whoName(payCtx.other)})`,
+      concept:`Pago ${card.name} corte ${monthOnly(cutMonthFor(payCtx.cardId,curMonthKey))} (parte de ${whoName(payCtx.other)})`,
       who:payCtx.who, amt:payCtx.otherAmt
     });
   }
@@ -2085,6 +2112,43 @@ function renderEntre(){
       ${paidLoansHtml()}
     </div>`;
 }
+
+/* ---- movimientos ligados a "Entre nosotros" (préstamos y gastos que pagó uno) ----
+   Se guardan como movimientos automáticos en Cuentas, así el saldo de la cuenta baja/sube solo. */
+function findMoveById(id){
+  for(const [k,mo] of Object.entries(db.months)){ for(const w of ['a','b']){ const arr=(mo.moves&&mo.moves[w])||[]; const i=arr.findIndex(m=>m.id===id); if(i>=0) return {k,w,arr,i}; } }
+  return null;
+}
+function removeMoveById(id){ const f=findMoveById(id); if(f) f.arr.splice(f.i,1); }
+function upsertLinkedMove(id,who,key,fields){
+  removeMoveById(id);
+  if(!fields) return;
+  const mo=M(key);
+  const a=accById(fields.acc);
+  mo.moves[who].push(Object.assign({id, auto:true, bank:a?a.name:''}, fields));
+}
+function syncLoanMoves(l){
+  const other=l.who==='a'?'b':'a';
+  // salida: el que presta
+  if(l.acc && l.amt>0) upsertLinkedMove('L-'+l.id, l.who, (l.date||today()).slice(0,7),
+    {date:l.date||today(), desc:`Préstamo a ${whoName(other)}${l.concept?' · '+l.concept:''}`, cat:'Otros', sub:'Otros', acc:l.acc, dir:-1, amt:l.amt, loan:true});
+  else removeMoveById('L-'+l.id);
+  // devolución: cuando lo marcan pagado y dicen a qué cuenta entró
+  if(l.paid && l.backAcc && l.amt>0) upsertLinkedMove('LB-'+l.id, l.who, (l.paidDate||today()).slice(0,7),
+    {date:l.paidDate||today(), desc:`${whoName(other)} devolvió préstamo${l.concept?' · '+l.concept:''}`, cat:'Otros', sub:'Otros', acc:l.backAcc, dir:1, amt:l.amt, loan:true});
+  else removeMoveById('LB-'+l.id);
+}
+function syncSettleMove(r,key){
+  if(!r.id) r.id=uid();
+  if(r.direct || !r.acc || !(r.amt>0)){ removeMoveById('S-'+r.id); return; }
+  if(!r.date) r.date=(today().slice(0,7)===key?today():key+'-01');
+  const h=autoCat(r.concept||'')||{cat:'Otros',sub:'Otros'};
+  upsertLinkedMove('S-'+r.id, r.who, key, {date:(r.date||(today().slice(0,7)===key?today():key+'-01')), desc:r.concept||'Gasto entre nosotros', cat:h.cat, sub:h.sub, acc:r.acc, dir:-1, amt:r.amt, settleLink:true});
+}
+function payerAccOptions(who,sel,emptyLabel){
+  const accs=(db.config.accounts||[]).filter(a=>(a.who===who||a.who==='shared')&&(a.cur||'COP')==='COP');
+  return `<option value="">${esc(emptyLabel)}</option>`+accs.map(a=>`<option value="${a.id}"${a.id===sel?' selected':''}>${esc(a.name)}</option>`).join('');
+}
 /* ---- préstamos ---- */
 function pendingLoans(){ return (db.loans||[]).filter(l=>!l.paid); }
 function loanRowsHtml(){
@@ -2100,6 +2164,7 @@ function loanRowsHtml(){
       </select>
       <input inputmode="decimal" value="${l.amt?l.amt.toLocaleString('es-CO',{maximumFractionDigits:2}):''}" placeholder="Valor" oninput="moneyInput(this)" onchange="editLoan('${l.id}','amt',this.value)" style="${st};text-align:right;font-variant-numeric:tabular-nums">
       <input type="date" value="${l.date||''}" onchange="editLoan('${l.id}','date',this.value)" style="${st}">
+      <select class="l-acc" onchange="editLoan('${l.id}','acc',this.value)" style="${st}" title="De qué cuenta salió la plata">${payerAccOptions(l.who,l.acc,'Salió de: no descontar')}</select>
       <button class="btn ghost sm" onclick="payLoan('${l.id}')" title="Ya lo devolvió">✓ Pagado</button>
       <button onclick="delLoan('${l.id}')" title="Borrar" style="background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:16px">×</button>
     </div>`).join('');
@@ -2116,10 +2181,28 @@ function paidLoansHtml(){
   </div>`;
 }
 function addLoan(){ db.loans.push({id:uid(),concept:'',who:'a',amt:0,date:today(),paid:false}); save(); renderEntre(); }
-function editLoan(id,f,v){ const l=db.loans.find(x=>x.id===id); if(!l)return; l[f]= f==='amt'?parseNum(v):v; save(); refreshEntre(); }
-function payLoan(id){ const l=db.loans.find(x=>x.id===id); if(!l)return; l.paid=true; l.paidDate=today(); save(); renderEntre(); }
-function unpayLoan(id){ const l=db.loans.find(x=>x.id===id); if(!l)return; l.paid=false; delete l.paidDate; save(); renderEntre(); }
-function delLoan(id){ const l=db.loans.find(x=>x.id===id); if(l&&l.amt>0&&!confirm('¿Borrar este préstamo? Si ya lo pagaron, mejor usa «✓ Pagado».'))return; db.loans=db.loans.filter(x=>x.id!==id); save(); renderEntre(); }
+function editLoan(id,f,v){ const l=db.loans.find(x=>x.id===id); if(!l)return; l[f]= f==='amt'?parseNum(v):v;
+  if(f==='who'){ const a=accById(l.acc); if(a&&a.who!==l.who&&a.who!=='shared') l.acc=''; }
+  syncLoanMoves(l); save(); if(f==='who') renderEntre(); else refreshEntre(); }
+function payLoan(id){
+  const l=db.loans.find(x=>x.id===id); if(!l)return;
+  const other=l.who==='a'?'b':'a';
+  openModal(`
+    <div class="modal-h"><h3>Préstamo pagado</h3><button class="x" data-close>×</button></div>
+    <form onsubmit="confirmPayLoan(event,'${l.id}')">
+      <p class="hint" style="margin-top:0">${esc(whoName(other))} le devolvió <b>${fmt(l.amt)}</b> a ${esc(whoName(l.who))}${l.concept?' ('+esc(l.concept)+')':''}.</p>
+      <div class="fld"><label>¿A qué cuenta entró la plata?</label><select id="lbAcc">${payerAccOptions(l.who,l.acc,'No registrar en Cuentas')}</select></div>
+      <div class="fld"><label>Fecha</label><input type="date" id="lbDate" value="${today()}"></div>
+      <button type="submit" class="btn">Marcar como pagado</button>
+    </form>`);
+}
+function confirmPayLoan(e,id){
+  e.preventDefault(); const l=db.loans.find(x=>x.id===id); if(!l)return;
+  l.paid=true; l.paidDate=document.getElementById('lbDate').value||today(); l.backAcc=document.getElementById('lbAcc').value||'';
+  syncLoanMoves(l); save(); closeModal(); renderEntre();
+}
+function unpayLoan(id){ const l=db.loans.find(x=>x.id===id); if(!l)return; l.paid=false; delete l.paidDate; delete l.backAcc; syncLoanMoves(l); save(); renderEntre(); }
+function delLoan(id){ const l=db.loans.find(x=>x.id===id); if(l&&l.amt>0&&!confirm('¿Borrar este préstamo? Si ya lo pagaron, mejor usa «✓ Pagado».'))return; removeMoveById('L-'+id); removeMoveById('LB-'+id); db.loans=db.loans.filter(x=>x.id!==id); save(); renderEntre(); }
 function calcRowsHtml(){
   const rows=M().settle;
   if(!rows.length) return '<p class="hint">Aún no hay gastos. Pulsa «Añadir gasto», o aparecerán solos cuando pagues una tarjeta completa.</p>';
@@ -2139,6 +2222,7 @@ function calcRowsHtml(){
         <option value="b"${r.who==='b'?' selected':''}>${esc(whoName('b'))}</option>
       </select>
       <input inputmode="decimal" value="${r.amt?r.amt.toLocaleString('es-CO',{maximumFractionDigits:2}):''}" placeholder="Valor" oninput="moneyInput(this)" onchange="editSettle(${i},'amt',this.value)" style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:13.5px;background:var(--bg);color:var(--ink);text-align:right;font-variant-numeric:tabular-nums">
+      <select class="s-acc" onchange="editSettle(${i},'acc',this.value)" title="Si eliges una cuenta, se descuenta de su saldo. Déjalo en «no descontar» si ya lo anotaste en Cuentas." style="padding:9px 11px;border:1px solid var(--line);border-radius:9px;font-size:13px;background:var(--bg);color:var(--ink)">${payerAccOptions(r.who,r.acc,'Salió de: no descontar')}</select>
       <button onclick="delSettle(${i})" style="background:none;border:none;color:var(--ink-faint);cursor:pointer;font-size:16px">×</button>
     </div>`;
   }).join('');
@@ -2182,9 +2266,11 @@ function calcResultHtml(){
 }
 function refreshEntre(){ document.getElementById('calcRows').innerHTML=calcRowsHtml(); document.getElementById('calcResult').innerHTML=calcResultHtml(); }
 function addSettle(){ M().settle.push({id:uid(),concept:'',who:'a',amt:0}); save(); refreshEntre(); }
-function editSettle(i,field,val){ const r=M().settle[i]; if(!r)return; r[field]= field==='amt'?parseNum(val):val; save(); refreshEntre(); }
-function delSettle(i){ M().settle.splice(i,1); save(); refreshEntre(); }
-function clearSettle(){ if(!confirm('¿Limpiar todos los gastos de la calculadora?'))return; M().settle=[]; save(); refreshEntre(); }
+function editSettle(i,field,val){ const r=M().settle[i]; if(!r)return; r[field]= field==='amt'?parseNum(val):val;
+  if(field==='who'){ const a=accById(r.acc); if(a&&a.who!==r.who&&a.who!=='shared') r.acc=''; }
+  syncSettleMove(r,curMonthKey); save(); refreshEntre(); }
+function delSettle(i){ const r=M().settle[i]; if(r&&r.id) removeMoveById('S-'+r.id); M().settle.splice(i,1); save(); refreshEntre(); }
+function clearSettle(){ if(!confirm('¿Limpiar los gastos del mes? Los que descontaste de una cuenta se quedan en Cuentas.'))return; M().settle=[]; save(); refreshEntre(); }
 
 /* ============================================================
    MIGRACIÓN desde formato viejo (app actual)
