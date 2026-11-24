@@ -105,6 +105,7 @@
   .wrap{max-width:1120px;margin:0 auto;padding-block:26px 70px;padding-left:max(20px,env(safe-area-inset-left,0px));padding-right:max(20px,env(safe-area-inset-right,0px))}
   .view{display:none}
   .sm-only{display:none}
+  .card-per{display:block;font-size:11px;font-weight:400;color:var(--ink-faint);margin-top:2px;white-space:nowrap;letter-spacing:0;text-transform:none}
   .sema{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px;margin-bottom:12px}
   .sema-c{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius-sm);padding:14px 16px;box-shadow:var(--shadow)}
   .sema-c .top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}
@@ -634,6 +635,11 @@ function periodLabel(cardId,payKey){
   const sh=d=>d.getDate()+' '+d.toLocaleDateString('es-CO',{month:'short'}).replace('.','');
   return `${start.toLocaleDateString('es-CO',{month:'long'})} (${sh(start)} – ${sh(end)})`;
 }
+/* solo Davivienda muestra el mes de las compras que se pagan (ej. "octubre") */
+function isDavi(cardId){ const c=db.config.cards.find(x=>x.id===cardId); return !!(c&&/davivienda/i.test(c.name)); }
+function periodMonth(cardId,key){ return periodLabel(cardId,key).replace(/\s*\(.*$/,''); }
+function payTag(cardId,key){ return isDavi(cardId)?' '+periodMonth(cardId,key):''; }
+function cardPer(cardId,key){ return isDavi(cardId)?`<span class="card-per">${esc(periodMonth(cardId,key||curMonthKey))}</span>`:''; }
 function monthOnly(key){ return monthName(key).replace(/\s+de\s+\d{4}$/i,'').toLowerCase(); }
 function normalizeDB(){
   if(!db.config) db.config=blankDB().config;
@@ -651,7 +657,8 @@ function normalizeDB(){
   if(!db.months)db.months={};
   if(!Array.isArray(db.loans)) db.loans=[];
   linkMovesToAccounts();
-  labelCardPayMoves();   // préstamos entre ustedes (no dependen del mes)
+  labelCardPayMoves();
+  relocateMoves();   // préstamos entre ustedes (no dependen del mes)
   migrateCarCats();
 }
 /* movimientos que solo guardaron el NOMBRE del banco (ej. pagos de tarjeta automáticos):
@@ -659,9 +666,28 @@ function normalizeDB(){
 function labelCardPayMoves(){
   Object.entries(db.months).forEach(([k,mo])=>{ if(!mo.moves) return; ['a','b'].forEach(w=>(mo.moves[w]||[]).forEach(m=>{
     if(!(m.auto && m.linkCard)) return;
-    const base=(m.desc||'Pago').replace(/\s*·.*$/,'');   // quita cualquier etiqueta anterior ("· corte …")
-    m.desc=base+' · '+periodLabel(m.linkCard,k);
+    if(!m.payKey) m.payKey=k;            // mes de la app cuyo corte se pagó (no cambia aunque el movimiento se mueva de mes)
+    k=m.payKey;
+    // limpia etiquetas de versiones anteriores ("· corte …", "· octubre (…)") y, solo en Davivienda, pone el mes
+    let base=(m.desc||'Pago').replace(/\s*·.*$/,'');
+    const c=db.config.cards.find(x=>x.id===m.linkCard);
+    if(c && isDavi(m.linkCard)){
+      const amb=/\(ambas partes\)/.test(base);
+      base='Pago '+c.name+payTag(m.linkCard,k)+(amb?' (ambas partes)':'');
+    }
+    m.desc=base;
   })); });
+}
+/* los movimientos se muestran en el mes de su FECHA (antes quedaban en el mes que estaba abierto al anotarlos) */
+function relocateMoves(){
+  Object.keys(db.months).forEach(k=>{ const mo=db.months[k]; if(!mo.moves) return; ['a','b'].forEach(w=>{
+    const keep=[];
+    (mo.moves[w]||[]).forEach(m=>{
+      const t=(m.date||'').slice(0,7);
+      if(/^\d{4}-\d{2}$/.test(t) && t!==k){ M(t).moves[w].push(m); } else keep.push(m);
+    });
+    mo.moves[w]=keep;
+  }); });
 }
 function linkMovesToAccounts(){
   const accs=db.config.accounts||[]; if(!accs.length) return;
@@ -757,7 +783,7 @@ function semaforoHtml(key){
     const used=cardUsed(c.id,key), tope=cardTope(c.id); tU+=used; tT+=tope;
     const l=budgetLevel(used,tope), pc=tope>0?used/tope*100:0, rest=tope-used;
     return `<div class="sema-c">
-      <div class="top"><span class="nm">${esc(c.name)}</span><span class="pill lvl-${l}">${levelLabel(l)} · ${Math.round(pc)}%</span></div>
+      <div class="top"><span class="nm">${esc(c.name)}${cardPer(c.id,key)}</span><span class="pill lvl-${l}">${levelLabel(l)} · ${Math.round(pc)}%</span></div>
       <div class="amt"><b>${fmt(used)}</b> de ${fmt(tope)}</div>
       <div class="sema-bar"><i style="width:${Math.min(100,pc)}%;background:${levelColor(l)}"></i></div>
       <div class="ft lvl-${l}">${rest>=0?`Te quedan <b>${fmt(rest)}</b>`:`Te pasaste <b>${fmt(-rest)}</b>`}</div>
@@ -881,6 +907,11 @@ function save(){
   b.classList.add('show'); clearTimeout(saveTimer);
   saveTimer=setTimeout(()=>b.classList.remove('show'),1100);
   if(sbReady && !remoteApplying){ clearTimeout(pushTimer); pushTimer=setTimeout(pushToCloud,450); }
+}
+function toast(msg){
+  const b=document.getElementById('saveBadge'); if(!b) return;
+  b.textContent=msg; b.classList.add('show'); clearTimeout(saveTimer);
+  saveTimer=setTimeout(()=>{ b.classList.remove('show'); setTimeout(()=>{ b.textContent='Guardado ✓'; },300); },2600);
 }
 /* si se cierra o se esconde la app, guardar ya lo pendiente */
 function flushSave(){ if(pushTimer){ clearTimeout(pushTimer); pushTimer=null; pushToCloud(); } }
@@ -1241,7 +1272,7 @@ function cardUseRows(){
     const col=pc>=100?'var(--warn)':pc>=70?'var(--amber)':'var(--ok)';
     const dim=used<=0?' class="dim"':'';
     return `<tr${dim}>
-      <td>${esc(c.name)}</td>
+      <td>${esc(c.name)}${cardPer(c.id)}</td>
       <td class="num">${lim>0?fmt(lim):'—'}</td>
       <td class="num">${fmt(used)}</td>
       <td class="num"${saldo<0?' style="color:var(--warn)"':''}>${lim>0?fmt(saldo):'—'}</td>
@@ -1262,7 +1293,7 @@ function personCardTable(who){
     const parts=cardPersonParts(c.id,who);
     const paid=findPay(c.id,who);
     if(parts.total<=0.5){
-      return `<tr class="dim"><td>${esc(c.name)}</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td></td></tr>`;
+      return `<tr class="dim"><td>${esc(c.name)}${cardPer(c.id)}</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td></td></tr>`;
     }
     let chk;
     if(paid){
@@ -1271,7 +1302,7 @@ function personCardTable(who){
       chk=`<span class="pay-check" title="Marcar pagado" onclick="openPayModal('${c.id}','${who}')"></span>`;
     }
     return `<tr>
-      <td>${esc(c.name)}<span class="sm-only pt-detail">propio ${fmt(parts.propio)} · ambos ${fmt(parts.ambos)}</span></td>
+      <td>${esc(c.name)}${cardPer(c.id)}<span class="sm-only pt-detail">propio ${fmt(parts.propio)} · ambos ${fmt(parts.ambos)}</span></td>
       <td class="num">${parts.propio>0?fmt(parts.propio):'$0'}</td>
       <td class="num">${parts.ambos>0?fmt(parts.ambos):'$0'}</td>
       <td class="num" style="font-weight:600">${fmt(parts.total)}</td>
@@ -1879,8 +1910,8 @@ function savePay(e){
   mo.pays.push({card:payCtx.cardId, who:payCtx.who, acc:acc||bank, date, reimbursedOther:!!whole});
   // movimiento automático en mi libro: salida por mi parte (o total si pagué todo)
   const outAmt = whole ? (payCtx.amt+payCtx.otherAmt) : payCtx.amt;
-  mo.moves[payCtx.who].push({
-    id:uid(), auto:true, date, desc:`Pago ${card.name}${whole?' (ambas partes)':''} · ${periodLabel(payCtx.cardId,curMonthKey)}`,
+  M((date||today()).slice(0,7)).moves[payCtx.who].push({
+    id:uid(), auto:true, payKey:curMonthKey, date, desc:`Pago ${card.name}${payTag(payCtx.cardId,curMonthKey)}${whole?' (ambas partes)':''}`,
     cat:'Tarjetas', acc, bank, dir:-1, amt:outAmt, linkCard:payCtx.cardId
   });
   // si pagué la parte del otro, marcarla como pagada también (atada) y dejar reembolso pendiente
@@ -1891,7 +1922,7 @@ function savePay(e){
     // registrar en "Entre nosotros" como deuda directa (no se reparte)
     mo.settle.push({
       id:uid(), direct:true, linkCard:payCtx.cardId,
-      concept:`Pago ${card.name} ${periodLabel(payCtx.cardId,curMonthKey)} (parte de ${whoName(payCtx.other)})`,
+      concept:`Pago ${card.name}${payTag(payCtx.cardId,curMonthKey)} (parte de ${whoName(payCtx.other)})`,
       who:payCtx.who, amt:payCtx.otherAmt
     });
   }
@@ -1914,9 +1945,10 @@ function togglePay(cardId,who){
   } else {
     mo.pays=mo.pays.filter(x=>!(x.card===cardId&&x.who===who));
   }
-  // quitar movimientos auto ligados a esta tarjeta
-  mo.moves.a=mo.moves.a.filter(m=>!(m.auto&&m.linkCard===cardId));
-  mo.moves.b=mo.moves.b.filter(m=>!(m.auto&&m.linkCard===cardId));
+  // quitar movimientos auto ligados a esta tarjeta y a ESTE mes de pago (pueden estar guardados en el mes de su fecha)
+  Object.entries(db.months).forEach(([k,m2])=>{ if(!m2.moves) return; ['a','b'].forEach(w=>{
+    m2.moves[w]=(m2.moves[w]||[]).filter(m=>!(m.auto&&m.linkCard===cardId&&(m.payKey||k)===curMonthKey));
+  }); });
   // quitar la deuda directa que generó en "Entre nosotros"
   mo.settle=mo.settle.filter(s=>!(s.direct&&s.linkCard===cardId));
   save(); renderCompras();
@@ -1992,15 +2024,17 @@ function saveMove(e,editId){
     dir:parseInt(document.querySelector('input[name=mdir]:checked').value),
     amt:parseNum(document.getElementById('mAmt').value)
   };
+  const dk=(data.date||today()).slice(0,7);
   if(editId){
-    const m=(M().moves[who]||[]).find(x=>x.id===editId);
-    if(m) Object.assign(m,data);
+    const f=findMoveById(editId);
+    if(f){ const m=f.arr[f.i]; Object.assign(m,data); if(f.k!==dk){ f.arr.splice(f.i,1); M(dk).moves[who].push(m); } }
   } else {
-    M().moves[who].push({id:uid(), auto:false, ...data});
+    M(dk).moves[who].push({id:uid(), auto:false, ...data});
   }
   save(); closeModal(); renderCuentas();
+  if(dk!==curMonthKey) toast('Guardado en '+monthName(dk)+' (el mes de su fecha)');
 }
-function delMove(who,id){ M().moves[who]=M().moves[who].filter(m=>m.id!==id); save(); renderCuentas(); }
+function delMove(who,id){ removeMoveById(id); save(); renderCuentas(); }
 
 /* ---- registrar rendimiento REAL de una cuenta de ahorro ---- */
 function openYieldModal(){
@@ -2156,7 +2190,7 @@ function syncSettleMove(r,key){
   if(r.direct || !r.acc || !(r.amt>0)){ removeMoveById('S-'+r.id); return; }
   if(!r.date) r.date=(today().slice(0,7)===key?today():key+'-01');
   const h=autoCat(r.concept||'')||{cat:'Otros',sub:'Otros'};
-  upsertLinkedMove('S-'+r.id, r.who, key, {date:(r.date||(today().slice(0,7)===key?today():key+'-01')), desc:r.concept||'Gasto entre nosotros', cat:h.cat, sub:h.sub, acc:r.acc, dir:-1, amt:r.amt, settleLink:true});
+  upsertLinkedMove('S-'+r.id, r.who, (r.date||key+'-01').slice(0,7), {date:(r.date||(today().slice(0,7)===key?today():key+'-01')), desc:r.concept||'Gasto entre nosotros', cat:h.cat, sub:h.sub, acc:r.acc, dir:-1, amt:r.amt, settleLink:true});
 }
 function payerAccOptions(who,sel,emptyLabel){
   const accs=(db.config.accounts||[]).filter(a=>(a.who===who||a.who==='shared')&&(a.cur||'COP')==='COP');
