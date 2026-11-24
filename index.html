@@ -625,6 +625,15 @@ function cardLag(cardId){
 }
 /* mes del corte que se paga en el mes `payKey` */
 function cutMonthFor(cardId,payKey){ return shiftMonth(payKey,-cardLag(cardId)); }
+/* periodo de compras que se paga en `payKey`: "octubre (9 oct – 8 nov)" */
+function periodLabel(cardId,payKey){
+  const cutKey=cutMonthFor(cardId,payKey), day=(db.config.cardCuts||{})[cardId];
+  const [y,m]=cutKey.split('-').map(Number);
+  if(!day) return monthOnly(cutKey);
+  const end=new Date(y,m-1,day), start=new Date(y,m-2,day+1);
+  const sh=d=>d.getDate()+' '+d.toLocaleDateString('es-CO',{month:'short'}).replace('.','');
+  return `${start.toLocaleDateString('es-CO',{month:'long'})} (${sh(start)} – ${sh(end)})`;
+}
 function monthOnly(key){ return monthName(key).replace(/\s+de\s+\d{4}$/i,'').toLowerCase(); }
 function normalizeDB(){
   if(!db.config) db.config=blankDB().config;
@@ -632,7 +641,9 @@ function normalizeDB(){
   if(!c.people) c.people={a:{name:"Nico",salary:0},b:{name:"Mari",salary:0}};
   if(!c.cards)c.cards=[]; if(!c.cardLimits)c.cardLimits={}; if(!c.cardCuts)c.cardCuts={}; if(!c.cardPayNext)c.cardPayNext={}; if(!c.cardPayLag)c.cardPayLag={};
   // Davivienda se paga "mes vencido" (corte de noviembre → se paga el 25 de diciembre)
-  if(!c._daviLag){ (c.cards||[]).forEach(cd=>{ if(/davivienda/i.test(cd.name) && c.cardPayLag[cd.id]===undefined) c.cardPayLag[cd.id]=1; }); c._daviLag=true; }
+  // (una versión anterior movió Davivienda un mes por error; aquí se deshace)
+  if(c._daviLag && !c._daviLagFix){ (c.cards||[]).forEach(cd=>{ if(/davivienda/i.test(cd.name)) delete c.cardPayLag[cd.id]; }); }
+  c._daviLagFix=true;
   if(!c.fixedExpenses)c.fixedExpenses=[]; if(!c.savingGoals)c.savingGoals=[]; if(!c.accounts)c.accounts=[];
   if(!c.categories||!c.categories.length)c.categories=blankDB().config.categories;
   if(!c.cardBudget) c.cardBudget={on:true, from:'2026-12', max:1000000, pctSmall:50, custom:{}};
@@ -647,7 +658,9 @@ function normalizeDB(){
    se conectan a la cuenta de esa persona con el mismo nombre, para que resten del saldo */
 function labelCardPayMoves(){
   Object.entries(db.months).forEach(([k,mo])=>{ if(!mo.moves) return; ['a','b'].forEach(w=>(mo.moves[w]||[]).forEach(m=>{
-    if(m.auto && m.linkCard && !/· corte /.test(m.desc||'')) m.desc=(m.desc||'Pago')+' · corte '+monthOnly(cutMonthFor(m.linkCard,k));
+    if(!(m.auto && m.linkCard)) return;
+    const base=(m.desc||'Pago').replace(/\s*·.*$/,'');   // quita cualquier etiqueta anterior ("· corte …")
+    m.desc=base+' · '+periodLabel(m.linkCard,k);
   })); });
 }
 function linkMovesToAccounts(){
@@ -1451,7 +1464,7 @@ function renderConfig(){
             <span style="color:var(--ink-faint)">El corte se paga</span>
             <select onchange="setCardLag('${c.id}',this.value)" style="padding:6px 8px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--ink);font-size:12.5px;max-width:100%">
               <option value="0"${cardLag(c.id)===0?' selected':''}>el mismo mes del corte (ej. corta 10 nov → paga nov)</option>
-              <option value="1"${cardLag(c.id)===1?' selected':''}>el mes siguiente · mes vencido (ej. corta 8 nov → paga dic)</option>
+              <option value="1"${cardLag(c.id)===1?' selected':''}>el mes siguiente al corte (ej. corta 8 nov → paga dic)</option>
               <option value="-1"${cardLag(c.id)===-1?' selected':''}>con el salario del mes anterior al corte</option>
             </select>
           </div>
@@ -1867,7 +1880,7 @@ function savePay(e){
   // movimiento automático en mi libro: salida por mi parte (o total si pagué todo)
   const outAmt = whole ? (payCtx.amt+payCtx.otherAmt) : payCtx.amt;
   mo.moves[payCtx.who].push({
-    id:uid(), auto:true, date, desc:`Pago ${card.name}${whole?' (ambas partes)':''} · corte ${monthOnly(cutMonthFor(payCtx.cardId,curMonthKey))}`,
+    id:uid(), auto:true, date, desc:`Pago ${card.name}${whole?' (ambas partes)':''} · ${periodLabel(payCtx.cardId,curMonthKey)}`,
     cat:'Tarjetas', acc, bank, dir:-1, amt:outAmt, linkCard:payCtx.cardId
   });
   // si pagué la parte del otro, marcarla como pagada también (atada) y dejar reembolso pendiente
@@ -1878,7 +1891,7 @@ function savePay(e){
     // registrar en "Entre nosotros" como deuda directa (no se reparte)
     mo.settle.push({
       id:uid(), direct:true, linkCard:payCtx.cardId,
-      concept:`Pago ${card.name} corte ${monthOnly(cutMonthFor(payCtx.cardId,curMonthKey))} (parte de ${whoName(payCtx.other)})`,
+      concept:`Pago ${card.name} ${periodLabel(payCtx.cardId,curMonthKey)} (parte de ${whoName(payCtx.other)})`,
       who:payCtx.who, amt:payCtx.otherAmt
     });
   }
