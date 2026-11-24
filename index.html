@@ -626,8 +626,23 @@ function normalizeDB(){
   if(!c.cardBudget) c.cardBudget={on:true, from:'2026-12', max:1000000, pctSmall:50, custom:{}};
   if(!c.cardBudget.custom) c.cardBudget.custom={};
   if(!db.months)db.months={};
-  if(!Array.isArray(db.loans)) db.loans=[];   // préstamos entre ustedes (no dependen del mes)
+  if(!Array.isArray(db.loans)) db.loans=[];
+  linkMovesToAccounts();   // préstamos entre ustedes (no dependen del mes)
   migrateCarCats();
+}
+/* movimientos que solo guardaron el NOMBRE del banco (ej. pagos de tarjeta automáticos):
+   se conectan a la cuenta de esa persona con el mismo nombre, para que resten del saldo */
+function linkMovesToAccounts(){
+  const accs=db.config.accounts||[]; if(!accs.length) return;
+  const n=x=>norm(x||'').trim();
+  Object.values(db.months).forEach(mo=>{ if(!mo.moves) return; ['a','b'].forEach(who=>{
+    (mo.moves[who]||[]).forEach(m=>{
+      if(m.acc && accById(m.acc)) return;
+      if(!m.bank) return;
+      const hit=accs.find(a=>(a.who===who||a.who==='shared')&&n(a.name)===n(m.bank));
+      if(hit) m.acc=hit.id;
+    });
+  }); });
 }
 /* compras viejas que estaban en Transporte › Gasolina / Parqueaderos / Carro pasan a la categoría Carro */
 function migrateCarCats(){
@@ -1782,12 +1797,13 @@ function openPayModal(cardId,who){
   const otherParts=cardPersonParts(cardId,other);
   const otherPending = otherParts.total>0.5 && !findPay(cardId,other);
   payCtx={cardId,who,other,amt:parts.total,otherAmt:otherParts.total,otherPending};
-  const banks=bankOptions(who);
+  // cuenta sugerida: la primera cuenta normal (no ahorro) en pesos de esa persona
+  const def=(db.config.accounts||[]).find(a=>a.who===who&&a.type!=='ahorro'&&(a.cur||'COP')==='COP');
   openModal(`
     <div class="modal-h"><h3>Marcar pago</h3><button class="x" data-close>×</button></div>
     <form onsubmit="savePay(event)">
       <p class="hint" style="margin-bottom:12px">Vas a marcar como pagada la parte de <b>${esc(whoName(who))}</b> (${fmt(parts.total)}) de ${esc(card.name)}.</p>
-      <div class="fld"><label>¿De qué cuenta sale la plata?</label><select id="pBank">${banks}</select></div>
+      <div class="fld"><label>¿De qué cuenta sale la plata?</label>${accSelect('pBank',who,def&&def.id)}</div>
       <div class="fld"><label>Fecha del pago</label><input type="date" id="pDate" value="${today()}"></div>
       ${otherPending?`<div class="fld" style="background:var(--ambos-soft);border-radius:11px;padding:12px 14px">
         <label style="display:flex;align-items:center;gap:9px;cursor:pointer;margin:0">
@@ -1811,19 +1827,21 @@ function bankOptions(who){
 function savePay(e){
   e.preventDefault();
   if(!payCtx)return;
-  const bank=document.getElementById('pBank').value;
+  const pEl=document.getElementById('pBank');
+  const acc=pEl.dataset.nobank?undefined:pEl.value;
+  const bank=acc?((accById(acc)||{}).name||''):pEl.value;
   const date=document.getElementById('pDate').value;
   const whole = document.getElementById('pWhole') && document.getElementById('pWhole').checked;
   const card=db.config.cards.find(c=>c.id===payCtx.cardId);
   const mo=M();
 
   // registro del pago (mi parte)
-  mo.pays.push({card:payCtx.cardId, who:payCtx.who, acc:bank, date, reimbursedOther:!!whole});
+  mo.pays.push({card:payCtx.cardId, who:payCtx.who, acc:acc||bank, date, reimbursedOther:!!whole});
   // movimiento automático en mi libro: salida por mi parte (o total si pagué todo)
   const outAmt = whole ? (payCtx.amt+payCtx.otherAmt) : payCtx.amt;
   mo.moves[payCtx.who].push({
     id:uid(), auto:true, date, desc:`Pago ${card.name}${whole?' (ambas partes)':''}`,
-    cat:'Tarjetas', bank, dir:-1, amt:outAmt, linkCard:payCtx.cardId
+    cat:'Tarjetas', acc, bank, dir:-1, amt:outAmt, linkCard:payCtx.cardId
   });
   // si pagué la parte del otro, marcarla como pagada también (atada) y dejar reembolso pendiente
   if(whole){
